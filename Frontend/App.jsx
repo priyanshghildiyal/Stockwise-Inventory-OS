@@ -201,6 +201,104 @@ function StatusBadge({ status }) {
   return <Badge className={`badge-soft ${statusClassMap[status] || 'status-draft'}`}>{status}</Badge>;
 }
 
+function Feature({ icon, title, text }) {
+  return (
+    <div className="feature">
+      <div className="feature-icon">{icon}</div>
+      <div>
+        <div className="feature-title">{title}</div>
+        <div className="feature-text">{text}</div>
+      </div>
+    </div>
+  );
+}
+
+function LogoIcon() {
+  return (
+    <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M20 3L35 11.5V28.5L20 37L5 28.5V11.5L20 3Z" fill="white" fillOpacity="0.95" />
+      <path d="M20 8L30 13.7V25.3L20 31L10 25.3V13.7L20 8Z" fill="#1769FF" />
+      <path d="M20 8V31L30 25.3V13.7L20 8Z" fill="#633CFF" fillOpacity="0.8" />
+      <path d="M20 15L25 17.8V23.5L20 26.3L15 23.5V17.8L20 15Z" fill="white" fillOpacity="0.95" />
+    </svg>
+  );
+}
+
+function MailIcon() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <rect x="3" y="5" width="18" height="14" rx="2" />
+      <path d="M3 7L12 13L21 7" />
+    </svg>
+  );
+}
+
+function LockIcon() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <rect x="4" y="10" width="16" height="11" rx="2" />
+      <path d="M8 10V7a4 4 0 018 0v3" />
+    </svg>
+  );
+}
+
+function EyeIcon() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
+function ShieldIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M12 3L20 6V11C20 16.5 16.5 20 12 22C7.5 20 4 16.5 4 11V6L12 3Z" />
+      <path d="M8.5 12L11 14.5L15.5 9.5" />
+    </svg>
+  );
+}
+
+function InventoryIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <rect x="4" y="4" width="16" height="16" rx="3" />
+      <path d="M8 9H16M8 13H13M8 17H11" />
+      <circle cx="16" cy="16" r="2" />
+    </svg>
+  );
+}
+
+function AutomationIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <circle cx="6" cy="12" r="2.5" />
+      <circle cx="18" cy="6" r="2.5" />
+      <circle cx="18" cy="18" r="2.5" />
+      <path d="M8.5 11L15.5 7M8.5 13L15.5 17" />
+    </svg>
+  );
+}
+
+function ReportsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <path d="M5 19V10M12 19V5M19 19V8" />
+      <path d="M3 19H21" />
+    </svg>
+  );
+}
+
+function SecurityIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <path d="M12 3L20 6V11C20 16.5 16.5 20 12 22C7.5 20 4 16.5 4 11V6L12 3Z" />
+      <path d="M9 12L11 14L15 10" />
+    </svg>
+  );
+}
+
 function OperationsTable({ docs, warehouseList, search, setSearch, typeFilter, setTypeFilter, statusFilter, setStatusFilter, locationFilter, setLocationFilter, ledger = false }) {
   return (
     <div className="section-card">
@@ -339,12 +437,30 @@ export default function App() {
       currency: currencyOptions.some((item) => item.code === saved?.currency) ? saved.currency : 'USD',
     };
   });
-  const [authenticated, setAuthenticated] = React.useState(() => readSaved('stockwise-session', false));
-  const [themeMode, setThemeMode] = React.useState('light');
+  const getStoredSession = () => {
+    const localSession = readSaved('stockwise-session', false);
+    if (localSession) return localSession;
+    try {
+      const sessionOnly = window.sessionStorage.getItem('stockwise-session');
+      return sessionOnly ? JSON.parse(sessionOnly) : false;
+    } catch {
+      return false;
+    }
+  };
+
+  const [authenticated, setAuthenticated] = React.useState(() => getStoredSession());
+  const [themeMode, setThemeMode] = React.useState(() => {
+    const savedTheme = readSaved('stockwise-theme', null);
+    if (savedTheme === 'dark' || savedTheme === 'light') return savedTheme;
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  });
   const [users, setUsers] = React.useState(() => readSaved('stockwise-users', [demoUser]));
   const [authMode, setAuthMode] = React.useState('login');
   const [loginForm, setLoginForm] = React.useState({ name: '', email: '', password: '', confirmPassword: '', role: 'Operations Manager' });
   const [loginError, setLoginError] = React.useState('');
+  const [showPassword, setShowPassword] = React.useState(false);
+  const [remember, setRemember] = React.useState(() => readSaved('stockwise-remember', true));
+  const [loading, setLoading] = React.useState(false);
   const [page, setPage] = React.useState('Today');
   const [search, setSearch] = React.useState('');
   const [globalSearch, setGlobalSearch] = React.useState('');
@@ -420,6 +536,8 @@ export default function App() {
   }, []);
 
   React.useEffect(() => {
+    writeSaved('stockwise-theme', themeMode);
+    writeSaved('stockwise-remember', remember);
     writeSaved('stockwise-products', products);
     writeSaved('stockwise-operations', docs);
     writeSaved('stockwise-billing', invoices);
@@ -433,7 +551,7 @@ export default function App() {
     writeSaved('stockwise-payments', payments);
     writeSaved('stockwise-settings', settings);
     writeSaved('stockwise-users', users);
-  }, [products, docs, invoices, warehouseList, suppliers, purchaseOrders, customers, salesOrders, shipments, returns, payments, settings, users]);
+  }, [themeMode, remember, products, docs, invoices, warehouseList, suppliers, purchaseOrders, customers, salesOrders, shipments, returns, payments, settings, users]);
 
   const displayUser = authenticated && typeof authenticated === 'object' ? authenticated : demoUser;
   const userRole = displayUser.role || 'Admin';
@@ -459,49 +577,72 @@ export default function App() {
     window.setTimeout(() => setToast(''), 2500);
   };
 
+  const persistSession = (user) => {
+    try {
+      if (remember) {
+        writeSaved('stockwise-session', user);
+        window.sessionStorage.removeItem('stockwise-session');
+      } else {
+        removeSaved('stockwise-session');
+        window.sessionStorage.setItem('stockwise-session', JSON.stringify(user));
+      }
+    } catch {
+      writeSaved('stockwise-session', user);
+    }
+  };
+
   const handleLogin = (event) => {
     event.preventDefault();
+    setLoading(true);
     const email = loginForm.email.trim().toLowerCase();
 
     if (authMode === 'register') {
       const name = loginForm.name.trim();
       if (!name) {
+        setLoading(false);
         setLoginError('Please enter your name.');
         return;
       }
       if (loginForm.password.length < 8) {
+        setLoading(false);
         setLoginError('Password must be at least 8 characters long.');
         return;
       }
       if (loginForm.password !== loginForm.confirmPassword) {
+        setLoading(false);
         setLoginError('Passwords do not match.');
         return;
       }
       if (users.some((user) => user.email.toLowerCase() === email)) {
+        setLoading(false);
         setLoginError('An account with this email already exists.');
         return;
       }
       const user = { name, email, password: loginForm.password, role: loginForm.role || 'Operations Manager' };
       setUsers((current) => [...current, user]);
       setAuthenticated(user);
-      writeSaved('stockwise-session', user);
+      persistSession(user);
       setLoginForm({ name: '', email: '', password: '', confirmPassword: '', role: 'Operations Manager' });
       setLoginError('');
+      setLoading(false);
       return;
     }
 
     const user = users.find((candidate) => candidate.email.toLowerCase() === email && candidate.password === loginForm.password);
     if (!user) {
+      setLoading(false);
       setLoginError('Email or password is incorrect.');
       return;
     }
     setAuthenticated(user);
-    writeSaved('stockwise-session', user);
+    persistSession(user);
     setLoginError('');
+    setLoading(false);
   };
 
   const logout = () => {
     removeSaved('stockwise-session');
+    window.sessionStorage.removeItem('stockwise-session');
     setAuthenticated(false);
   };
 
@@ -1112,6 +1253,78 @@ export default function App() {
       })
       .slice(0, 12);
   }, [products, salesOrders, docs]);
+  const safetyStockRecommendations = React.useMemo(() => {
+    return products
+      .map((product) => {
+        const stock = totalStock(product);
+        const recentSales = salesOrders.filter((order) => order.productName === product.name);
+        const demandUnits = recentSales.reduce((sum, order) => sum + Number(order.qty || 0), 0);
+        const avgDailyDemand = demandUnits > 0 ? demandUnits / 30 : 0;
+        const leadTimeDays = suppliers.find((supplier) => supplier.name === product.supplierName || supplier.name === product.supplier)?.leadTime || 7;
+        const deviationValue = recentSales.length > 1
+          ? Math.sqrt(recentSales.reduce((sum, order) => sum + (Number(order.qty || 0) - avgDailyDemand) ** 2, 0) / recentSales.length)
+          : Math.max(avgDailyDemand * 0.5, 1);
+        const recommendedSafety = Math.max(0, Math.ceil((avgDailyDemand * leadTimeDays * 0.5) + (deviationValue * Math.max(leadTimeDays * 0.5, 3))));
+        const targetCover = Math.max(recommendedSafety + Math.ceil(avgDailyDemand * leadTimeDays), Number(product.reorder || 0));
+        const protectionGap = Math.max(targetCover - stock, 0);
+
+        let policyStatus = 'Healthy';
+        if (stock < recommendedSafety) policyStatus = 'Critical';
+        else if (stock < targetCover) policyStatus = 'Watch';
+
+        return {
+          ...product,
+          stock,
+          avgDailyDemand,
+          leadTimeDays,
+          recommendedSafety,
+          targetCover,
+          protectionGap,
+          policyStatus,
+        };
+      })
+      .filter((item) => item.stock > 0 || item.avgDailyDemand > 0 || Number(item.reorder || 0) > 0)
+      .sort((a, b) => {
+        const statusOrder = { Critical: 0, Watch: 1, Healthy: 2 };
+        return statusOrder[a.policyStatus] - statusOrder[b.policyStatus] || b.protectionGap - a.protectionGap;
+      })
+      .slice(0, 8);
+  }, [products, salesOrders, suppliers]);
+  const abcSegmentation = React.useMemo(() => {
+    const productSales = products
+      .map((product) => {
+        const revenue = salesOrders
+          .filter((order) => order.productName === product.name)
+          .reduce((sum, order) => sum + Number(order.total || 0), 0);
+        const units = salesOrders
+          .filter((order) => order.productName === product.name)
+          .reduce((sum, order) => sum + Number(order.qty || 0), 0);
+        return {
+          ...product,
+          revenue,
+          units,
+        };
+      })
+      .filter((item) => item.revenue > 0 || item.units > 0)
+      .sort((a, b) => b.revenue - a.revenue);
+
+    const totalRevenue = productSales.reduce((sum, item) => sum + item.revenue, 0);
+
+    let cumulative = 0;
+    return productSales.map((item) => {
+      cumulative += totalRevenue > 0 ? item.revenue / totalRevenue : 0;
+      let className = 'C';
+      if (cumulative <= 0.7) className = 'A';
+      else if (cumulative <= 0.9) className = 'B';
+
+      return {
+        ...item,
+        contributionPct: totalRevenue > 0 ? (item.revenue / totalRevenue) * 100 : 0,
+        cumulativePct: cumulative * 100,
+        className,
+      };
+    }).slice(0, 8);
+  }, [products, salesOrders]);
   const exceptionQueue = React.useMemo(() => {
     const queue = [];
 
@@ -1288,6 +1501,215 @@ export default function App() {
       .slice(0, 6);
   }, [products, salesOrders]);
   const attentionItems = lowStockProducts.length > 0 ? lowStockProducts.slice(0, 3) : products.slice(0, 3);
+  const customerPerformance = React.useMemo(() => {
+    return customers
+      .map((customer) => {
+        const customerOrders = salesOrders.filter((order) => order.customerName === customer.name);
+        const revenue = customerOrders.reduce((sum, order) => sum + Number(order.total || 0), 0);
+        const units = customerOrders.reduce((sum, order) => sum + Number(order.qty || 0), 0);
+        const returnedUnits = returns.filter((item) => item.customerName === customer.name).reduce((sum, item) => sum + Number(item.qty || 0), 0);
+        const avgOrderValue = customerOrders.length ? revenue / customerOrders.length : 0;
+        const margin = customerOrders.reduce((sum, order) => {
+          const product = products.find((entry) => entry.name === order.productName);
+          const sellPrice = Number(order.unitPrice || product?.price || 0);
+          const unitCost = Math.max(0, sellPrice * 0.45);
+          return sum + Number(order.qty || 0) * (sellPrice - unitCost);
+        }, 0);
+        const returnRate = units > 0 ? (returnedUnits / units) * 100 : 0;
+        const grossMarginRate = revenue > 0 ? (margin / revenue) * 100 : 0;
+        const lastOrder = customerOrders.slice().sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))[0];
+        let accountHealth = 'Stable';
+        if (revenue === 0 && customerOrders.length === 0) accountHealth = 'Stable';
+        if (returnedUnits > 0 || avgOrderValue < 250 || grossMarginRate < 20) accountHealth = 'Watch';
+        if (returnedUnits > Math.max(1, units * 0.2) || revenue < 400 || grossMarginRate < 10 || returnRate > 25) accountHealth = 'Critical';
+
+        return {
+          ...customer,
+          revenue,
+          units,
+          avgOrderValue,
+          margin,
+          grossMarginRate,
+          returnRate,
+          returnedUnits,
+          orderCount: customerOrders.length,
+          lastOrderDate: lastOrder?.createdAt || '—',
+          accountHealth,
+        };
+      })
+      .sort((a, b) => {
+        const healthOrder = { Critical: 0, Watch: 1, Stable: 2 };
+        return healthOrder[a.accountHealth] - healthOrder[b.accountHealth] || b.revenue - a.revenue;
+      });
+  }, [customers, salesOrders, returns, products]);
+  const executiveSignals = React.useMemo(() => {
+    const totalRevenue = salesOrders.reduce((sum, order) => sum + Number(order.total || 0), 0);
+    const deliveredCount = shipments.filter((shipment) => shipment.status === 'Delivered').length;
+    const onTimeRate = shipments.length ? (deliveredCount / shipments.length) * 100 : 100;
+    const productSalesUnits = salesOrders.reduce((sum, order) => sum + Number(order.qty || 0), 0);
+    const returnedUnits = returns.reduce((sum, item) => sum + Number(item.qty || 0), 0);
+    const returnRate = productSalesUnits > 0 ? (returnedUnits / productSalesUnits) * 100 : 0;
+    const inventoryValue = products.reduce((sum, product) => sum + totalStock(product) * Number(product.price || 0), 0);
+    const avgSupplierSla = suppliers.length
+      ? suppliers.reduce((sum, supplier) => sum + Number(supplier.leadTime || 0), 0) / suppliers.length
+      : 0;
+    const grossMargin = totalRevenue - products.reduce((sum, product) => sum + totalStock(product) * Number(product.price || 0) * 0.45, 0);
+
+    return [
+      { label: 'Revenue', value: moneyFormatter.format(totalRevenue), status: totalRevenue > 0 ? 'Healthy' : 'Watch' },
+      { label: 'Gross margin', value: moneyFormatter.format(Math.max(0, grossMargin)), status: grossMargin > 0 ? 'Healthy' : 'Watch' },
+      { label: 'Fill rate', value: `${Math.max(0, Math.min(100, Math.round(onTimeRate)))}%`, status: onTimeRate >= 90 ? 'Healthy' : onTimeRate >= 75 ? 'Watch' : 'Critical' },
+      { label: 'Return rate', value: `${Math.round(returnRate)}%`, status: returnRate <= 8 ? 'Healthy' : returnRate <= 15 ? 'Watch' : 'Critical' },
+      { label: 'Stock value', value: moneyFormatter.format(inventoryValue), status: inventoryValue > 0 ? 'Healthy' : 'Watch' },
+      { label: 'Supplier SLA', value: `${Math.round(avgSupplierSla || 0)}d avg lead`, status: avgSupplierSla <= 10 ? 'Healthy' : avgSupplierSla <= 14 ? 'Watch' : 'Critical' },
+    ];
+  }, [salesOrders, shipments, returns, products, suppliers, moneyFormatter]);
+  const planVariance = React.useMemo(() => {
+    const targetUnits = products.reduce((sum, product) => sum + (Number(product.reorder || 0) * 2), 0);
+    const actualSoldUnits = salesOrders.reduce((sum, order) => sum + Number(order.qty || 0), 0);
+    const actualStockUnits = products.reduce((sum, product) => sum + totalStock(product), 0);
+    const plannedStockUnits = Math.max(targetUnits, actualStockUnits, 1);
+    const salesVariance = targetUnits > 0 ? ((actualSoldUnits - targetUnits) / targetUnits) * 100 : 0;
+    const stockVariance = ((actualStockUnits - plannedStockUnits) / plannedStockUnits) * 100;
+    const receivedValue = purchaseOrders.filter((order) => order.status === 'Received').reduce((sum, order) => sum + Number(order.total || 0), 0);
+    const committedValue = purchaseOrders.reduce((sum, order) => sum + Number(order.total || 0), 0);
+    const procurementVariance = committedValue > 0 ? ((receivedValue - committedValue) / committedValue) * 100 : 0;
+
+    return [
+      { label: 'Sales plan vs actual', value: `${salesVariance >= 0 ? '+' : ''}${Math.round(salesVariance)}%`, status: salesVariance >= -10 ? 'Healthy' : salesVariance >= -25 ? 'Watch' : 'Critical' },
+      { label: 'Stock plan vs actual', value: `${stockVariance >= 0 ? '+' : ''}${Math.round(stockVariance)}%`, status: stockVariance >= -5 ? 'Healthy' : stockVariance >= -15 ? 'Watch' : 'Critical' },
+      { label: 'Procurement variance', value: `${procurementVariance >= 0 ? '+' : ''}${Math.round(procurementVariance)}%`, status: procurementVariance <= 10 ? 'Healthy' : procurementVariance <= 25 ? 'Watch' : 'Critical' },
+    ];
+  }, [products, salesOrders, purchaseOrders]);
+  const cashCycle = React.useMemo(() => {
+    const paidAmount = payments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+    const outstandingReceivables = invoices.filter((invoice) => invoice.kind === 'Invoice' && invoice.status === 'Unpaid').reduce((sum, invoice) => sum + Number(invoice.amount || 0), 0);
+    const purchaseCommitments = purchaseOrders.filter((order) => order.status !== 'Received').reduce((sum, order) => sum + Number(order.total || 0), 0);
+    const receivedFromCustomers = salesOrders.reduce((sum, order) => sum + Number(order.total || 0), 0);
+    const supplierLeadAverage = suppliers.length ? suppliers.reduce((sum, supplier) => sum + Number(supplier.leadTime || 0), 0) / suppliers.length : 0;
+    const collectionCycle = receivedFromCustomers > 0 ? (paidAmount / receivedFromCustomers) * 100 : 0;
+    const serviceHealth = supplierLeadAverage <= 10 ? 'Healthy' : supplierLeadAverage <= 15 ? 'Watch' : 'Critical';
+
+    return {
+      paidAmount,
+      outstandingReceivables,
+      purchaseCommitments,
+      collectionCycle,
+      supplierLeadAverage,
+      serviceHealth,
+    };
+  }, [payments, invoices, purchaseOrders, salesOrders, suppliers]);
+  const inventoryAging = React.useMemo(() => {
+    return products
+      .map((product) => {
+        const stock = totalStock(product);
+        const recentMovements = docs
+          .filter((doc) => doc.product === product.name)
+          .sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
+        const lastMovementDate = recentMovements[0]?.date ? new Date(recentMovements[0].date) : null;
+        const ageDays = lastMovementDate ? Math.max(0, Math.round((Date.now() - lastMovementDate.getTime()) / 86400000)) : 0;
+        const demand = salesOrders.filter((order) => order.productName === product.name).reduce((sum, order) => sum + Number(order.qty || 0), 0);
+        let agingStatus = 'Healthy';
+        if (stock === 0 || ageDays > 45) agingStatus = 'Stale';
+        if (stock > 0 && ageDays > 30 && demand === 0) agingStatus = 'Slow';
+        if (stock > 0 && ageDays > 60) agingStatus = 'Critical';
+
+        return {
+          ...product,
+          stock,
+          ageDays,
+          demand,
+          agingStatus,
+        };
+      })
+      .sort((a, b) => {
+        const statusOrder = { Critical: 0, Stale: 1, Slow: 2, Healthy: 3 };
+        return statusOrder[a.agingStatus] - statusOrder[b.agingStatus] || b.ageDays - a.ageDays;
+      })
+      .slice(0, 8);
+  }, [products, docs, salesOrders]);
+  const replenishmentCoverage = React.useMemo(() => {
+    const windowDays = 30;
+    const timeWindowMs = windowDays * 86400000;
+    const now = Date.now();
+
+    return products
+      .map((product) => {
+        const stock = totalStock(product);
+        const recentSales = salesOrders.filter((order) => {
+          const createdAt = new Date(order.createdAt || 0).getTime();
+          return order.productName === product.name && createdAt >= now - timeWindowMs;
+        });
+        const demandUnits = recentSales.reduce((sum, order) => sum + Number(order.qty || 0), 0);
+        const avgDailyDemand = recentSales.length ? demandUnits / windowDays : 0;
+        const supplierLead = suppliers.find((supplier) => supplier.name === product.supplierName || supplier.name === product.supplier)?.leadTime || 7;
+        const daysCover = avgDailyDemand > 0 ? stock / avgDailyDemand : stock > 0 ? 999 : 0;
+
+        let coverStatus = 'Healthy';
+        if (stock === 0 || daysCover < 7) coverStatus = 'Critical';
+        else if (daysCover < 14 || stock <= Number(product.reorder || 0)) coverStatus = 'Watch';
+
+        return {
+          ...product,
+          stock,
+          avgDailyDemand,
+          daysCover,
+          supplierLead,
+          coverStatus,
+        };
+      })
+      .filter((item) => item.stock > 0 || item.avgDailyDemand > 0 || Number(item.reorder || 0) > 0)
+      .sort((a, b) => {
+        const statusOrder = { Critical: 0, Watch: 1, Healthy: 2 };
+        return statusOrder[a.coverStatus] - statusOrder[b.coverStatus] || a.daysCover - b.daysCover;
+      })
+      .slice(0, 8);
+  }, [products, salesOrders, suppliers]);
+  const supplierRiskBoard = React.useMemo(() => {
+    return supplierSlaSummary
+      .map((supplier) => ({
+        ...supplier,
+        openValue: purchaseOrders
+          .filter((order) => order.supplierName === supplier.name && order.status !== 'Received')
+          .reduce((sum, order) => sum + Number(order.total || 0), 0),
+      }))
+      .sort((a, b) => {
+        const riskOrder = { Critical: 0, Watch: 1, Healthy: 2 };
+        return riskOrder[a.riskLevel] - riskOrder[b.riskLevel] || b.openValue - a.openValue;
+      })
+      .slice(0, 6);
+  }, [supplierSlaSummary, purchaseOrders]);
+  const warehousePerformance = React.useMemo(() => {
+    return warehouseList
+      .map((location) => {
+        const totalUnits = products.reduce((sum, product) => sum + Number(product.stock?.[location] || 0), 0);
+        const activeProducts = products.filter((product) => Number(product.stock?.[location] || 0) > 0).length;
+        const lowStockProductsAtLocation = products.filter((product) => Number(product.stock?.[location] || 0) <= Number(product.reorder || 0)).length;
+        const inbound = docs.filter((doc) => doc.location === location && doc.type === 'Receipt').reduce((sum, doc) => sum + Number(doc.qty || 0), 0);
+        const outbound = docs.filter((doc) => doc.location === location && doc.type === 'Delivery').reduce((sum, doc) => sum + Number(doc.qty || 0), 0);
+        const netFlow = inbound - outbound;
+        const coverage = products.length ? (activeProducts / products.length) * 100 : 0;
+        let health = 'Healthy';
+        if (lowStockProductsAtLocation > 3 || coverage < 35) health = 'Watch';
+        if (lowStockProductsAtLocation > 6 || coverage < 20) health = 'Critical';
+
+        return {
+          location,
+          totalUnits,
+          activeProducts,
+          lowStockProductsAtLocation,
+          inbound,
+          outbound,
+          netFlow,
+          coverage,
+          health,
+        };
+      })
+      .sort((a, b) => {
+        const healthOrder = { Critical: 0, Watch: 1, Healthy: 2 };
+        return healthOrder[a.health] - healthOrder[b.health] || b.totalUnits - a.totalUnits;
+      });
+  }, [warehouseList, products, docs]);
   const todayPriorityText = products.length === 0
     ? 'Your workspace is ready. Add your first item to start tracking inventory.'
     : lowStockProducts.length
@@ -1759,87 +2181,173 @@ export default function App() {
   return (
     <>
       {!authenticated ? (
-        <div className={`auth-screen ${currentThemeClass}`}>
-          <div className={`auth-card auth-centered-card ${currentThemeClass}`}>
-            <div className="auth-topbar">
-              <div className="auth-brand-inline">
-                <span className="auth-mark" aria-hidden="true">S</span>
-                <span>Stockwise</span>
-              </div>
-              <div className="auth-top-actions">
-                <button type="button" className="icon-button theme-toggle-button" onClick={() => setThemeMode((current) => current === 'dark' ? 'light' : 'dark')} aria-label="Toggle theme">
-                  {themeMode === 'dark' ? '☀' : '☾'}
-                </button>
-                <div className="status-chip">{isOnline ? 'Online' : 'Offline'}</div>
-              </div>
-            </div>
+        <main className="login-page">
+          <div className="login-container">
+            <div className="login-card">
+                <div className="brand-panel">
+                  <div className="warehouse-glow" />
+                  <div className="brand-content">
+                    <div className="brand-header">
+                      <div className="logo"><LogoIcon /></div>
+                      <div className="brand-name">Stockwise</div>
+                    </div>
 
-            <div className="auth-intro">
-              <div className="hero-badge">Inventory operating system</div>
-              <h2 className="auth-title">{authMode === 'register' ? 'Create your account' : 'Welcome back'}</h2>
-              <p className="auth-copy">{authMode === 'register' ? 'Set up your inventory workspace and start tracking stock in minutes.' : 'Sign in to manage inventory, operations, and warehouse performance.'}</p>
-            </div>
+                    <div className="hero-copy">
+                      <h1>
+                        Smarter Inventory.
+                        <span>Stronger Business.</span>
+                      </h1>
+                      <p>
+                        Manage your stock, orders, and operations with confidence. Stockwise helps you stay organized,
+                        save time, and grow faster.
+                      </p>
+                    </div>
 
-            <Form onSubmit={handleLogin}>
-              {authMode === 'register' && (
-                <>
-                  <Form.Group className="auth-field">
-                    <Form.Label>Full name</Form.Label>
-                    <Form.Control value={loginForm.name} onChange={(event) => setLoginForm({ ...loginForm, name: event.target.value })} placeholder="Your name" />
-                  </Form.Group>
-                  <Form.Group className="auth-field">
-                    <Form.Label>Role</Form.Label>
-                    <Form.Select value={loginForm.role} onChange={(event) => setLoginForm({ ...loginForm, role: event.target.value })}>
-                      {roleOptions.map((role) => <option key={role} value={role}>{role}</option>)}
-                    </Form.Select>
-                  </Form.Group>
-                </>
-              )}
-              <Form.Group className="auth-field">
-                <Form.Label>Email address</Form.Label>
-                <Form.Control type="email" value={loginForm.email} onChange={(event) => setLoginForm({ ...loginForm, email: event.target.value })} placeholder="name@company.com" />
-              </Form.Group>
-              <Form.Group className="auth-field">
-                <div className="auth-field-head">
-                  <Form.Label>Password</Form.Label>
-                  {authMode === 'login' && <button type="button" className="inline-action">Forgot?</button>}
+                    <div className="feature-list">
+                      <Feature icon={<InventoryIcon />} title="Real-time Inventory" text="Track stock across all locations" />
+                      <Feature icon={<AutomationIcon />} title="Smart Automation" text="Reduce manual work" />
+                      <Feature icon={<ReportsIcon />} title="Powerful Reports" text="Make data-driven decisions" />
+                      <Feature icon={<SecurityIcon />} title="Secure & Reliable" text="Your data, always protected" />
+                    </div>
+
+                    <div className="trusted">
+                      <div className="trusted-label">Trusted by 10,000+ businesses worldwide</div>
+                      <div className="trusted-logos">
+                        <div className="trusted-logo">◈ Acme Co</div>
+                        <div className="trusted-logo">◉ BrightMart</div>
+                        <div className="trusted-logo">◈ BuildIt</div>
+                        <div className="trusted-logo">✦ NovaTech</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="analytics-card">
+                    <div className="analytics-label">Total Stock Value</div>
+                    <div className="analytics-value">$248,650</div>
+                    <div className="analytics-growth">↑ 12.3%</div>
+                    <svg className="chart" viewBox="0 0 200 58" preserveAspectRatio="none">
+                      <defs>
+                        <linearGradient id="chartGradient" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#3192ff" stopOpacity="0.4" />
+                          <stop offset="100%" stopColor="#3192ff" stopOpacity="0" />
+                        </linearGradient>
+                      </defs>
+                      <path d="M0 48 L15 43 L30 47 L45 36 L60 40 L75 29 L90 33 L105 20 L120 26 L135 17 L150 21 L165 10 L180 14 L200 4 V58 H0Z" fill="url(#chartGradient)" />
+                      <path d="M0 48 L15 43 L30 47 L45 36 L60 40 L75 29 L90 33 L105 20 L120 26 L135 17 L150 21 L165 10 L180 14 L200 4" fill="none" stroke="#45a2ff" strokeWidth="2" />
+                    </svg>
+                  </div>
                 </div>
-                <Form.Control type="password" value={loginForm.password} onChange={(event) => setLoginForm({ ...loginForm, password: event.target.value })} placeholder={authMode === 'register' ? 'At least 8 characters' : 'Enter your password'} />
-              </Form.Group>
-              {authMode === 'register' && (
-                <Form.Group className="auth-field">
-                  <Form.Label>Confirm password</Form.Label>
-                  <Form.Control type="password" value={loginForm.confirmPassword} onChange={(event) => setLoginForm({ ...loginForm, confirmPassword: event.target.value })} placeholder="Repeat password" />
-                </Form.Group>
-              )}
 
-              {authMode === 'login' && (
-                <div className="auth-check-row">
-                  <Form.Check type="checkbox" label="Remember me" />
+                <div className="login-panel">
+                  <div className="login-content">
+                    <div className="mobile-brand">
+                      <div className="logo"><LogoIcon /></div>
+                      <div className="brand-name">Stockwise</div>
+                    </div>
+
+                    <div className="login-logo">
+                      <span className="login-mark"><LogoIcon /></span>
+                      <span>Stockwise</span>
+                    </div>
+
+                    <div className="login-heading">
+                      <h2>{authMode === 'register' ? 'Create account' : 'Welcome back!'}</h2>
+                      <p>{authMode === 'register' ? 'Set up your workspace and start managing inventory.' : 'Please sign in to your account.'}</p>
+                    </div>
+
+                    {loginError && <div className="login-alert alert alert-danger" role="alert">{loginError}</div>}
+
+                    <Form onSubmit={handleLogin}>
+                      {authMode === 'register' && (
+                        <>
+                          <Form.Group className="mb-3">
+                            <Form.Label>Full name</Form.Label>
+                            <Form.Control value={loginForm.name} onChange={(event) => setLoginForm({ ...loginForm, name: event.target.value })} placeholder="Your name" />
+                          </Form.Group>
+                          <Form.Group className="mb-3">
+                            <Form.Label>Role</Form.Label>
+                            <Form.Select value={loginForm.role} onChange={(event) => setLoginForm({ ...loginForm, role: event.target.value })}>
+                              {roleOptions.map((role) => <option key={role} value={role}>{role}</option>)}
+                            </Form.Select>
+                          </Form.Group>
+                        </>
+                      )}
+
+                      <Form.Group className="mb-3">
+                        <Form.Label>Email address</Form.Label>
+                        <InputGroup>
+                          <InputGroup.Text className="mail-icon-wrap"><MailIcon /></InputGroup.Text>
+                          <Form.Control type="email" placeholder="you@company.com" value={loginForm.email} onChange={(event) => setLoginForm({ ...loginForm, email: event.target.value })} autoComplete="email" />
+                        </InputGroup>
+                      </Form.Group>
+
+                      <Form.Group className="mb-1">
+                        <Form.Label>Password</Form.Label>
+                        <InputGroup>
+                          <InputGroup.Text className="mail-icon-wrap"><LockIcon /></InputGroup.Text>
+                          <Form.Control type={showPassword ? 'text' : 'password'} placeholder={authMode === 'register' ? 'At least 8 characters' : 'Enter your password'} value={loginForm.password} onChange={(event) => setLoginForm({ ...loginForm, password: event.target.value })} autoComplete={authMode === 'register' ? 'new-password' : 'current-password'} />
+                          <Button type="button" className="password-toggle" onClick={() => setShowPassword((current) => !current)} aria-label={showPassword ? 'Hide password' : 'Show password'}>
+                            <EyeIcon />
+                          </Button>
+                        </InputGroup>
+                      </Form.Group>
+
+                      {authMode === 'register' && (
+                        <Form.Group className="mt-3">
+                          <Form.Label>Confirm password</Form.Label>
+                          <InputGroup>
+                            <InputGroup.Text className="mail-icon-wrap"><LockIcon /></InputGroup.Text>
+                            <Form.Control type={showPassword ? 'text' : 'password'} placeholder="Repeat password" value={loginForm.confirmPassword} onChange={(event) => setLoginForm({ ...loginForm, confirmPassword: event.target.value })} autoComplete="new-password" />
+                          </InputGroup>
+                        </Form.Group>
+                      )}
+
+                      {authMode === 'login' && (
+                        <div className="login-options">
+                          <label className="remember-label">
+                            <input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} />
+                            Remember me
+                          </label>
+                          <button type="button" className="forgot-link">Forgot password?</button>
+                        </div>
+                      )}
+
+                      <Button type="submit" className="sign-in-btn" disabled={loading}>
+                        {loading ? (
+                          <>
+                            <span className="spinner-border spinner-border-sm me-2" aria-hidden="true" />
+                            Signing in...
+                          </>
+                        ) : (
+                          authMode === 'register' ? 'Create account' : 'Sign In'
+                        )}
+                      </Button>
+                    </Form>
+
+                    <div className="divider">or continue with</div>
+
+                    <div className="social-row">
+                      <Button type="button" className="social-btn" onClick={() => console.log('Google login')}><span className="social-icon">G</span>Google</Button>
+                      <Button type="button" className="social-btn" onClick={() => console.log('Microsoft login')}><span className="social-icon">⊞</span>Microsoft</Button>
+                      <Button type="button" className="social-btn" onClick={() => console.log('Apple login')}><span className="social-icon"></span>Apple</Button>
+                    </div>
+
+                    <div className="signup">
+                      {authMode === 'register' ? 'Already have an account?' : "Don't have an account?"}{' '}
+                      <button type="button" className="signup-link" onClick={() => { setAuthMode((current) => current === 'register' ? 'login' : 'register'); setLoginError(''); setLoginForm((current) => ({ ...current, role: current.role || 'Operations Manager' })); }}>
+                        {authMode === 'register' ? 'Log in' : 'Get started'}
+                      </button>
+                    </div>
+
+                    <div className="security-note">
+                      <ShieldIcon />
+                      Your information is secure with us
+                    </div>
+                  </div>
                 </div>
-              )}
-
-              {loginError && <div className="login-error" role="alert">{loginError}</div>}
-              <Button type="submit" className="auth-submit">{authMode === 'register' ? 'Create account' : 'Sign in'}</Button>
-            </Form>
-
-            <div className="auth-divider"><span>or</span></div>
-            <div className="auth-switch">
-              {authMode === 'register' ? 'Already have an account?' : 'Need an account?'}{' '}
-              <button type="button" className="text-link-button" onClick={() => { setAuthMode(authMode === 'register' ? 'login' : 'register'); setLoginError(''); setLoginForm((current) => ({ ...current, role: current.role || 'Operations Manager' })); }}>
-                {authMode === 'register' ? 'Log in' : 'Create account'}
-              </button>
             </div>
-
-            {authMode === 'login' && (
-              <div className="demo-box">
-                <div className="demo-label">Demo access</div>
-                <div><strong>jordan.davis@northstar.co</strong></div>
-                <div>Password: <strong>StockSense2025!</strong></div>
-              </div>
-            )}
           </div>
-        </div>
+        </main>
       ) : (
         <div className={`app-shell ${currentThemeClass}`}>
           <style>{`
@@ -1906,20 +2414,6 @@ export default function App() {
             .theme-light .section-card, .theme-light .kpi-card, .theme-light .feature-card, .theme-light .warehouse-tile, .theme-light .action-card { background: linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(245,248,251,0.98) 100%); }
             .theme-light .table thead th { background: rgba(18,28,42,0.02); color: #6a7f96; }
             .theme-light .table tbody td { color: #182d48; }
-            .theme-light .auth-screen { background: linear-gradient(135deg, #f3efe8 0%, #f1f5fb 100%); }
-            .theme-light .auth-card { background: rgba(255,255,255,0.96); border-color: rgba(215,223,233,0.9); }
-            .theme-light .auth-topbar, .theme-light .auth-switch, .theme-light .demo-box { color: #5d7085; }
-            .theme-dark .auth-card { background: rgba(14,21,31,0.96); border-color: rgba(153,170,189,0.12); }
-            .theme-dark .auth-screen { background: linear-gradient(135deg, #0b121c 0%, #111b27 100%); }
-            .theme-dark .auth-title, .theme-dark .auth-copy, .theme-dark .auth-field label, .theme-dark .auth-brand-inline { color: #edf6ff; }
-            .theme-dark .auth-field .form-control { background: rgba(255,255,255,0.02); border-color: rgba(153,170,189,0.15); color: #edf6ff; }
-            .theme-dark .auth-check-row .form-check-label, .theme-dark .demo-box { color: #dfeaf8; }
-            .theme-dark .demo-box { background: rgba(255,255,255,0.02); border-color: rgba(153,170,189,0.14); }
-            .theme-dark .status-chip { background: rgba(70,208,161,0.12); }
-            .theme-dark .status-chip, .theme-dark .auth-brand-inline { color: #e8f7ff; }
-            .theme-dark .hero-badge { background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.1); color: #dfeaf8; }
-            .auth-top-actions { display: flex; align-items: center; gap: 10px; }
-            .theme-toggle-button { display: grid; place-items: center; font-size: 16px; }
             .sidebar { width: 260px; flex: 0 0 260px; background: linear-gradient(180deg, rgba(10,16,26,0.97) 0%, rgba(17,28,45,0.98) 100%); color: #dfe9f7; min-height: 100vh; padding: 22px 15px 16px; display: flex; flex-direction: column; border-right: 1px solid var(--line); box-shadow: inset -1px 0 0 rgba(132, 160, 190, 0.12); }
             .stockwise-brand { display: flex; align-items: center; gap: 12px; padding: 6px 8px 24px; color: #fff; font-size: 20px; font-weight: 800; }
             .stockwise-brand-compact { justify-content: center; padding: 0 0 18px; font-size: 24px; }
@@ -2043,41 +2537,472 @@ export default function App() {
             .notification-item strong { display: block; font-size: 12px; }
             .notification-item small { display: block; color: var(--muted); font-size: 11px; }
             .notification-badge { display: inline-flex; min-width: 24px; justify-content: center; padding: 6px 7px; border-radius: 999px; background: rgba(255,189,103,0.18); color: #ffd79d; font-size: 10px; font-weight: 700; }
-            .auth-screen { min-height: 100vh; display: grid; place-items: center; background: linear-gradient(135deg, #f7f3ee 0%, #f1f6fb 100%); padding: 24px; }
-            .auth-card { width: min(100%, 430px); background: rgba(255,255,255,0.96); border: 1px solid rgba(215, 223, 233, 0.9); border-radius: 24px; box-shadow: 0 20px 40px rgba(17, 24, 39, 0.08); padding: 24px 22px 20px; }
-            .auth-centered-card { margin: 0 auto; }
-            .auth-topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
-            .auth-brand-inline { display: inline-flex; align-items: center; gap: 10px; color: #1b2e47; font-weight: 800; font-size: 16px; }
-            .auth-mark { width: 30px; height: 30px; display: inline-grid; place-items: center; border-radius: 10px; background: linear-gradient(135deg, #0d7d63, #25b087); color: #fff; font-size: 13px; font-weight: 800; }
-            .hero-badge { display: inline-flex; align-items: center; width: fit-content; border-radius: 999px; background: rgba(32, 118, 96, 0.08); border: 1px solid rgba(32, 118, 96, 0.1); color: #1f6d59; font-size: 10px; letter-spacing: 1.2px; text-transform: uppercase; padding: 7px 10px; font-weight: 700; }
-            .auth-intro { margin-bottom: 18px; }
-            .auth-title { margin: 14px 0 8px; color: #172b4d; font-size: 30px; font-weight: 800; letter-spacing: -0.8px; }
-            .auth-copy { color: #697d92; margin: 0; font-size: 14px; line-height: 1.6; }
-            .status-chip { display: inline-flex; padding: 7px 10px; border-radius: 999px; background: rgba(22,133,106,0.08); border: 1px solid rgba(22,133,106,0.14); color: #178a6d; font-size: 10px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; }
-            .auth-field { margin-bottom: 16px; }
-            .auth-field-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-            .auth-field label { font-size: 12px; font-weight: 700; color: #425a74; margin: 0; }
-            .auth-field .form-control { border-radius: 12px; border: 1px solid #dfe7f0; background: #f9fbfd; padding: 11px 12px; font-size: 14px; color: #192d45; }
-            .auth-field .form-control:focus { border-color: rgba(31,149,118,0.5); box-shadow: 0 0 0 0.25rem rgba(31,149,118,0.10); }
-            .auth-check-row { margin: -2px 0 14px; }
-            .auth-check-row .form-check-input { width: 15px; height: 15px; border-color: #d6deea; }
-            .auth-check-row .form-check-label { font-size: 12px; color: #5b7189; }
-            .auth-submit { width: 100%; margin-top: 6px; border-radius: 12px; padding: 12px 14px; font-size: 14px; font-weight: 700; background: linear-gradient(135deg, #1f8e73, #0f6a56); border: none; }
-            .auth-submit:hover { background: linear-gradient(135deg, #1a7f67, #0e5d4a); }
-            .inline-action { background: transparent; border: 0; color: #1a7a62; font-weight: 700; font-size: 11px; padding: 0; }
-            .login-error { background: #fff1f1; border: 1px solid rgba(213,87,87,0.15); color: #c85454; padding: 9px 12px; border-radius: 9px; font-size: 12px; margin-bottom: 12px; }
-            .auth-divider { display: flex; align-items: center; gap: 12px; margin: 18px 0 14px; color: #8ea1b5; font-size: 11px; text-transform: uppercase; letter-spacing: 0.9px; }
-            .auth-divider::before, .auth-divider::after { content: ''; height: 1px; background: #e9edf3; flex: 1; }
-            .auth-switch { text-align: center; font-size: 12px; color: #657890; }
-            .text-link-button { color: #146d5a; font-weight: 700; }
-            .demo-box { margin-top: 18px; background: linear-gradient(180deg, #f9fbfd 0%, #f3f7fa 100%); border: 1px solid #e4ecf4; border-radius: 12px; padding: 12px 14px; color: #586f8d; font-size: 12px; line-height: 1.7; }
-            .demo-label { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: #7d8fa5; margin-bottom: 4px; }
+            .login-page {
+              min-height: 100vh;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              background: linear-gradient(180deg, #f6f8fb 0%, #eef3f8 100%);
+              padding: 24px 16px;
+            }
+            .login-container {
+              width: min(100%, 440px);
+              display: flex;
+              justify-content: center;
+            }
+            .login-card {
+              width: 100%;
+              min-height: 0;
+              display: block;
+              background: #ffffff;
+              border: 1px solid #e5ebf2;
+              border-radius: 16px;
+              box-shadow: 0 16px 42px rgba(15, 23, 42, 0.08);
+              overflow: hidden;
+            }
+            .login-card > .brand-panel { display: none; }
+            .brand-panel {
+              position: relative;
+              background: linear-gradient(180deg, #f6fbff 0%, #edf4ff 100%);
+              color: #15273d;
+              padding: 26px 30px 22px;
+              display: flex;
+              flex-direction: column;
+              justify-content: space-between;
+              border-right: 1px solid rgba(146, 164, 182, 0.18);
+            }
+            .warehouse-glow {
+              position: absolute;
+              inset: 0;
+              background: radial-gradient(circle at 18% 12%, rgba(72, 134, 255, 0.12), transparent 22%), radial-gradient(circle at 72% 28%, rgba(29, 141, 115, 0.08), transparent 16%);
+              pointer-events: none;
+            }
+            .brand-content, .analytics-card {
+              position: relative;
+              z-index: 1;
+            }
+            .brand-header {
+              display: flex;
+              align-items: center;
+              gap: 10px;
+              margin-bottom: 22px;
+            }
+            .logo {
+              width: 38px;
+              height: 38px;
+              border-radius: 12px;
+              background: linear-gradient(135deg, #2f6cf6, #1bbd95);
+              display: grid;
+              place-items: center;
+              box-shadow: 0 10px 18px rgba(42, 110, 230, 0.16);
+            }
+            .logo svg {
+              width: 18px;
+              height: 18px;
+            }
+            .brand-name {
+              font-size: 20px;
+              font-weight: 800;
+              letter-spacing: -0.04em;
+              color: #12263d;
+            }
+            .hero-copy h1 {
+              margin: 0;
+              font-size: clamp(2.1rem, 3vw, 3.3rem);
+              line-height: 1.04;
+              letter-spacing: -0.08em;
+              max-width: 480px;
+              color: #162b42;
+            }
+            .hero-copy h1 span { display: block; }
+            .hero-copy p {
+              margin: 16px 0 0;
+              max-width: 460px;
+              color: #536a82;
+              line-height: 1.65;
+              font-size: 14px;
+            }
+            .feature-list {
+              margin-top: 24px;
+              display: grid;
+              gap: 12px;
+            }
+            .feature {
+              display: flex;
+              align-items: flex-start;
+              gap: 10px;
+              padding: 11px 12px;
+              border-radius: 12px;
+              background: rgba(255,255,255,0.7);
+              border: 1px solid rgba(150, 165, 182, 0.18);
+            }
+            .feature-icon {
+              width: 32px;
+              height: 32px;
+              border-radius: 10px;
+              display: grid;
+              place-items: center;
+              background: rgba(47, 108, 246, 0.08);
+              color: #264aa5;
+              flex-shrink: 0;
+            }
+            .feature-icon svg {
+              width: 16px;
+              height: 16px;
+            }
+            .feature-title {
+              font-size: 13px;
+              font-weight: 700;
+              margin-bottom: 2px;
+              color: #18314d;
+            }
+            .feature-text {
+              font-size: 12px;
+              color: #5d7289;
+            }
+            .trusted {
+              margin-top: 22px;
+            }
+            .trusted-label {
+              color: #607796;
+              font-size: 11px;
+              margin-bottom: 10px;
+              letter-spacing: 0.03em;
+            }
+            .trusted-logos {
+              display: flex;
+              flex-wrap: wrap;
+              gap: 8px;
+            }
+            .trusted-logo {
+              border: 1px solid rgba(145, 162, 180, 0.3);
+              border-radius: 999px;
+              padding: 8px 10px;
+              background: rgba(255,255,255,0.5);
+              color: #45607c;
+              font-size: 10px;
+            }
+            .analytics-card {
+              align-self: flex-end;
+              width: min(100%, 260px);
+              padding: 16px 16px 12px;
+              border-radius: 16px;
+              background: #ffffff;
+              border: 1px solid rgba(146, 164, 182, 0.2);
+              box-shadow: 0 12px 25px rgba(19, 33, 49, 0.04);
+              margin-top: 18px;
+            }
+            .analytics-label {
+              color: #6c7f96;
+              font-size: 10px;
+              font-weight: 700;
+              letter-spacing: 0.12em;
+              text-transform: uppercase;
+            }
+            .analytics-value {
+              margin-top: 8px;
+              font-size: 28px;
+              font-weight: 800;
+              letter-spacing: -0.06em;
+              color: #12263d;
+            }
+            .analytics-growth {
+              margin-top: 4px;
+              color: #13946c;
+              font-size: 11px;
+              font-weight: 700;
+            }
+            .chart {
+              width: 100%;
+              height: 62px;
+              margin-top: 8px;
+            }
+            .login-panel {
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              padding: 32px 30px;
+              background: #ffffff;
+            }
+            .login-content {
+              width: 100%;
+            }
+            .mobile-brand { display: none; }
+            .login-logo {
+              display: flex;
+              align-items: center;
+              gap: 9px;
+              margin-bottom: 26px;
+              color: #17314b;
+              font-size: 16px;
+              font-weight: 750;
+              letter-spacing: -0.03em;
+            }
+            .login-mark {
+              width: 28px;
+              height: 28px;
+              display: grid;
+              place-items: center;
+              border-radius: 8px;
+              background: linear-gradient(135deg, #2f6cf6, #1bbd95);
+            }
+            .login-mark svg {
+              width: 15px;
+              height: 15px;
+            }
+            .login-heading h2 {
+              margin: 0;
+              color: #11263d;
+              font-size: 25px;
+              font-weight: 800;
+              letter-spacing: -0.06em;
+            }
+            .login-heading p {
+              margin: 8px 0 0;
+              color: #607796;
+              font-size: 14px;
+            }
+            .login-alert { margin-top: 18px; }
+            .form-label {
+              font-size: 12px;
+              font-weight: 700;
+              color: #425b76;
+              margin-bottom: 8px;
+            }
+            .input-group-text.mail-icon-wrap {
+              border-right: 0;
+              background: #f5f8fc;
+              color: #5a7088;
+              padding: 0 12px;
+            }
+            .form-control, .form-select {
+              border-radius: 12px;
+              border: 1px solid #dfe7f1;
+              background: #f9fbfd;
+              color: #17314b;
+              padding: 11px 12px;
+              font-size: 14px;
+            }
+            .input-group .form-control {
+              border-left: 0;
+            }
+            .input-group .password-toggle {
+              border-radius: 0 12px 12px 0;
+              border: 1px solid #dfe7f1;
+              border-left: 0;
+              background: #f9fbfd;
+              color: #4e667e;
+              width: 44px;
+              padding: 0;
+            }
+            .input-group .password-toggle svg {
+              width: 15px;
+              height: 15px;
+            }
+            .form-control:focus, .form-select:focus {
+              border-color: rgba(27, 128, 99, 0.5);
+              box-shadow: 0 0 0 0.2rem rgba(27, 128, 99, 0.1);
+            }
+            .login-options {
+              display: flex;
+              align-items: center;
+              justify-content: space-between;
+              gap: 12px;
+              margin: 14px 0 18px;
+            }
+            .remember-label {
+              display: inline-flex;
+              align-items: center;
+              gap: 8px;
+              color: #48627c;
+              font-size: 12px;
+              cursor: pointer;
+              margin: 0;
+            }
+            .remember-label input {
+              width: 15px;
+              height: 15px;
+              accent-color: #1d8d73;
+            }
+            .forgot-link {
+              background: transparent;
+              border: 0;
+              color: #178269;
+              font-size: 12px;
+              font-weight: 700;
+              padding: 0;
+            }
+            .sign-in-btn {
+              width: 100%;
+              border: 0;
+              border-radius: 12px;
+              padding: 12px 14px;
+              background: linear-gradient(135deg, #1a7f66, #0d5a49);
+              color: white;
+              font-weight: 700;
+              box-shadow: 0 12px 26px rgba(15, 98, 80, 0.18);
+            }
+            .sign-in-btn:hover {
+              background: linear-gradient(135deg, #16755f, #0b4f42);
+            }
+            .divider {
+              display: flex;
+              align-items: center;
+              gap: 16px;
+              margin: 22px 0 16px;
+              color: #7a8ea3;
+              font-size: 10px;
+              text-transform: uppercase;
+              letter-spacing: 0.12em;
+            }
+            .divider::before, .divider::after {
+              content: '';
+              display: block;
+              flex: 1;
+              height: 1px;
+              background: linear-gradient(90deg, transparent, rgba(143, 162, 185, 0.5), transparent);
+            }
+            .social-row {
+              display: grid;
+              grid-template-columns: repeat(3, minmax(0, 1fr));
+              gap: 10px;
+            }
+            .social-btn {
+              border: 1px solid #e2eaf2;
+              border-radius: 12px;
+              background: #fff;
+              color: #495f7a;
+              font-weight: 600;
+              padding: 9px 8px;
+              display: inline-flex;
+              align-items: center;
+              justify-content: center;
+              gap: 8px;
+              font-size: 12px;
+            }
+            .social-icon {
+              width: 18px;
+              height: 18px;
+              border-radius: 50%;
+              display: inline-grid;
+              place-items: center;
+              background: #f3f6fa;
+              color: #213d5a;
+              font-size: 10px;
+              font-weight: 800;
+            }
+            .signup {
+              margin-top: 20px;
+              text-align: center;
+              color: #6d7d92;
+              font-size: 13px;
+            }
+            .signup-link {
+              background: transparent;
+              border: 0;
+              padding: 0;
+              color: #1b8d70;
+              font-weight: 700;
+            }
+            .security-note {
+              display: inline-flex;
+              align-items: center;
+              gap: 8px;
+              margin-top: 18px;
+              color: #556d84;
+              font-size: 12px;
+              padding: 9px 11px;
+              border-radius: 10px;
+              background: #f4f8fb;
+              border: 1px solid #e2ebf3;
+            }
+            .security-note svg {
+              width: 16px;
+              height: 16px;
+              color: #1c8b72;
+            }
+            @media (max-width: 980px) {
+              .login-card { min-height: 0; }
+            }
+            @media (max-width: 640px) {
+              .login-page { padding: 16px 12px; }
+              .login-panel { padding: 28px 22px; }
+              .social-row { gap: 7px; }
+              .social-btn { gap: 5px; padding-inline: 5px; }
+            }
             .toast-message { position: fixed; right: 24px; bottom: 24px; z-index: 1000; background: rgba(17,31,56,0.92); color: #fff; border-radius: 12px; padding: 12px 14px; font-size: 12px; box-shadow: 0 14px 30px rgba(17,31,56,0.18); }
             .modal .form-label { font-weight: 700; font-size: 12px; color: #405a75; }
             .modal-body .form-text { font-size: 11px; }
-            @media (max-width: 1100px) { .today-grid { grid-template-columns: 1fr; } .warehouse-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-            @media (max-width: 900px) { .sidebar { width: 220px; flex-basis: 220px; } .content { padding: 26px 20px 48px; } .search-box { width: 200px; } .grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-            @media (max-width: 700px) { .sidebar { width: 72px; flex-basis: 72px; padding: 18px 8px; } .stockwise-wordmark, .workspace-switch > div:last-child, .nav-label, .mini-avatar + div, .sidebar-user > div:last-child { display: none; } .workspace-switch { justify-content: center; padding: 10px 0; } .side-link { justify-content: center; padding: 10px 4px; } .side-link span:last-child { display: none; } .topbar { padding: 0 14px; } .content { padding: 20px 14px 32px; } .grid-3, .warehouse-grid { grid-template-columns: 1fr; } .page-row { flex-direction: column; } .toolbar-wrap { justify-content: flex-start; } .search-box { width: 100%; } }
+            @media (max-width: 1280px) {
+              .app-shell { min-height: 100vh; }
+              .content { padding: 24px 20px 48px; }
+              .grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+              .warehouse-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            }
+            @media (max-width: 1100px) {
+              .today-grid { grid-template-columns: 1fr; }
+              .warehouse-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+              .sidebar { width: 200px; flex-basis: 200px; }
+              .content { padding: 22px 16px 40px; }
+              .topbar { padding: 0 18px; }
+              .top-actions { gap: 10px; }
+            }
+            @media (max-width: 900px) {
+              .app-shell { flex-direction: column; }
+              .sidebar {
+                width: 100%;
+                flex-basis: auto;
+                min-height: auto;
+                padding: 16px 12px 12px;
+                border-right: 0;
+                border-bottom: 1px solid var(--line);
+              }
+              .stockwise-brand { padding-bottom: 16px; }
+              .workspace-switch { margin-bottom: 14px; }
+              .nav-section { margin-bottom: 14px; }
+              .nav-section .nav-label { margin-bottom: 6px; }
+              .side-link { padding: 10px 12px; }
+              .sidebar-footer { margin-top: 12px; }
+              .main { min-height: calc(100vh - 180px); }
+              .topbar { position: static; }
+              .search-box { width: 220px; }
+              .grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            }
+            @media (max-width: 700px) {
+              .sidebar { width: 100%; }
+              .stockwise-wordmark, .workspace-switch > div:last-child, .nav-label, .mini-avatar + div, .sidebar-user > div:last-child { display: none; }
+              .workspace-switch { justify-content: center; padding: 10px 0; }
+              .side-link { justify-content: center; padding: 10px 4px; }
+              .side-link span:last-child { display: none; }
+              .topbar {
+                height: auto;
+                flex-direction: column;
+                align-items: stretch;
+                padding: 12px 14px;
+                gap: 12px;
+              }
+              .top-actions {
+                flex-wrap: wrap;
+                justify-content: space-between;
+              }
+              .top-actions .search-box { width: 100%; }
+              .content { padding: 20px 14px 32px; }
+              .grid-3, .warehouse-grid { grid-template-columns: 1fr; }
+              .page-row { flex-direction: column; }
+              .toolbar-wrap { justify-content: flex-start; }
+              .search-box { width: 100%; }
+              .section-head { flex-direction: column; align-items: flex-start; }
+              .table thead th, .table tbody td { padding-left: 12px; padding-right: 12px; }
+            }
+            @media (max-width: 520px) {
+              .top-actions { gap: 8px; }
+              .icon-button { width: 32px; height: 32px; }
+              .page-head { font-size: 24px; }
+              .kpi-value { font-size: 22px; }
+              .btn { width: 100%; }
+              .toolbar-wrap .search-box { width: 100%; }
+              .login-content { width: 100%; }
+            }
           `}</style>
 
           <aside className="sidebar">
@@ -2873,6 +3798,47 @@ export default function App() {
                       </Table>
                     </div>
                   </div>
+
+                  <div className="section-card" style={{ marginTop: 16 }}>
+                    <div className="section-head">
+                      <div>
+                        <h2 className="section-heading">Account scorecard</h2>
+                        <div className="section-sub">Revenue, order health, and return pressure by customer.</div>
+                      </div>
+                    </div>
+                    <div className="table-responsive">
+                      <Table hover>
+                        <thead>
+                          <tr>
+                            <th>Customer</th>
+                            <th>Revenue</th>
+                            <th>Margin</th>
+                            <th>Avg. order</th>
+                            <th>Units</th>
+                            <th>Return rate</th>
+                            <th>Health</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {customerPerformance.length === 0 ? (
+                            <tr><td colSpan="7"><div className="empty-state">No customer performance signals are available yet.</div></td></tr>
+                          ) : (
+                            customerPerformance.map((customer) => (
+                              <tr key={customer.id}>
+                                <td className="product-name">{customer.name}</td>
+                                <td>{moneyFormatter.format(customer.revenue)}</td>
+                                <td>{moneyFormatter.format(customer.margin)}</td>
+                                <td>{moneyFormatter.format(customer.avgOrderValue)}</td>
+                                <td>{formatNumber(customer.units)}</td>
+                                <td>{`${Math.round(customer.returnRate)}%`}</td>
+                                <td><StatusBadge status={customer.accountHealth} /></td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </Table>
+                    </div>
+                  </div>
                 </>
               )}
 
@@ -3091,6 +4057,49 @@ export default function App() {
                         </div>
                       );
                     })}
+                  </div>
+
+                  <div className="section-card" style={{ marginTop: 16 }}>
+                    <div className="section-head">
+                      <div>
+                        <h2 className="section-heading">Warehouse optimization board</h2>
+                        <div className="section-sub">Track allocation pressure, inbound/outbound flow, and stock health by location.</div>
+                      </div>
+                    </div>
+                    <div className="table-responsive">
+                      <Table hover>
+                        <thead>
+                          <tr>
+                            <th>Location</th>
+                            <th>Units</th>
+                            <th>Active products</th>
+                            <th>Low stock items</th>
+                            <th>Inbound</th>
+                            <th>Outbound</th>
+                            <th>Net flow</th>
+                            <th>Health</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {warehousePerformance.length === 0 ? (
+                            <tr><td colSpan="8"><div className="empty-state">No warehouse performance data is available yet.</div></td></tr>
+                          ) : (
+                            warehousePerformance.map((location) => (
+                              <tr key={location.location}>
+                                <td className="product-name">{location.location}</td>
+                                <td>{formatNumber(location.totalUnits)}</td>
+                                <td>{location.activeProducts}</td>
+                                <td>{location.lowStockProductsAtLocation}</td>
+                                <td>{formatNumber(location.inbound)}</td>
+                                <td>{formatNumber(location.outbound)}</td>
+                                <td>{formatNumber(location.netFlow)}</td>
+                                <td><StatusBadge status={location.health} /></td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </Table>
+                    </div>
                   </div>
                 </>
               )}
@@ -3329,6 +4338,86 @@ export default function App() {
                       </Table>
                     </div>
                   </div>
+
+                  <div className="section-card" style={{ marginTop: 16 }}>
+                    <div className="section-head">
+                      <div>
+                        <h2 className="section-heading">Safety stock policy</h2>
+                        <div className="section-sub">Calculated protection level to cover demand variability and supplier lead-time exposure.</div>
+                      </div>
+                    </div>
+                    <div className="table-responsive">
+                      <Table hover>
+                        <thead>
+                          <tr>
+                            <th>Product</th>
+                            <th>On hand</th>
+                            <th>Avg / day</th>
+                            <th>Lead time</th>
+                            <th>Safety stock</th>
+                            <th>Target cover</th>
+                            <th>Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {safetyStockRecommendations.length === 0 ? (
+                            <tr><td colSpan="7"><div className="empty-state">No safety stock policy data is available yet.</div></td></tr>
+                          ) : (
+                            safetyStockRecommendations.map((item) => (
+                              <tr key={item.id}>
+                                <td className="product-name">{item.name}</td>
+                                <td>{formatNumber(item.stock)}</td>
+                                <td>{item.avgDailyDemand > 0 ? item.avgDailyDemand.toFixed(1) : '0.0'}</td>
+                                <td>{item.leadTimeDays}d</td>
+                                <td>{formatNumber(item.recommendedSafety)}</td>
+                                <td>{formatNumber(item.targetCover)}</td>
+                                <td><StatusBadge status={item.policyStatus} /></td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </Table>
+                    </div>
+                  </div>
+
+                  <div className="section-card" style={{ marginTop: 16 }}>
+                    <div className="section-head">
+                      <div>
+                        <h2 className="section-heading">ABC demand segmentation</h2>
+                        <div className="section-sub">Prioritize inventory attention by sales contribution and operational importance.</div>
+                      </div>
+                    </div>
+                    <div className="table-responsive">
+                      <Table hover>
+                        <thead>
+                          <tr>
+                            <th>Product</th>
+                            <th>Revenue</th>
+                            <th>Units sold</th>
+                            <th>Contribution</th>
+                            <th>Cumulative</th>
+                            <th>Class</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {abcSegmentation.length === 0 ? (
+                            <tr><td colSpan="6"><div className="empty-state">No ABC segmentation is available yet.</div></td></tr>
+                          ) : (
+                            abcSegmentation.map((item) => (
+                              <tr key={item.id}>
+                                <td className="product-name">{item.name}</td>
+                                <td>{moneyFormatter.format(item.revenue)}</td>
+                                <td>{formatNumber(item.units)}</td>
+                                <td>{`${Math.round(item.contributionPct)}%`}</td>
+                                <td>{`${Math.round(item.cumulativePct)}%`}</td>
+                                <td><StatusBadge status={item.className === 'A' ? 'Critical' : item.className === 'B' ? 'Waiting' : 'Done'} /></td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </Table>
+                    </div>
+                  </div>
                 </>
               )}
 
@@ -3440,6 +4529,204 @@ export default function App() {
                               </tr>
                             );
                           })}
+                        </tbody>
+                      </Table>
+                    </div>
+                  </div>
+
+                  <div className="section-card" style={{ marginBottom: 16 }}>
+                    <div className="section-head">
+                      <div>
+                        <h2 className="section-heading">Executive KPI board</h2>
+                        <div className="section-sub">Management-level summary across finance, stock, service, and returns.</div>
+                      </div>
+                    </div>
+                    <Row className="g-3 mb-3">
+                      {executiveSignals.map((signal) => (
+                        <Col sm={6} xl={4} key={signal.label}>
+                          <Card className="kpi-card">
+                            <Card.Body>
+                              <div className="kpi-label">{signal.label}</div>
+                              <div className="kpi-value">{signal.value}</div>
+                              <div className="kpi-foot"><StatusBadge status={signal.status} /></div>
+                            </Card.Body>
+                          </Card>
+                        </Col>
+                      ))}
+                    </Row>
+                  </div>
+
+                  <div className="section-card" style={{ marginBottom: 16 }}>
+                    <div className="section-head">
+                      <div>
+                        <h2 className="section-heading">Planning variance board</h2>
+                        <div className="section-sub">Compare expected operational targets to actual flow across sales, stock, and procurement.</div>
+                      </div>
+                    </div>
+                    <Row className="g-3 mb-3">
+                      {planVariance.map((signal) => (
+                        <Col sm={6} xl={4} key={signal.label}>
+                          <Card className="kpi-card">
+                            <Card.Body>
+                              <div className="kpi-label">{signal.label}</div>
+                              <div className="kpi-value">{signal.value}</div>
+                              <div className="kpi-foot"><StatusBadge status={signal.status} /></div>
+                            </Card.Body>
+                          </Card>
+                        </Col>
+                      ))}
+                    </Row>
+                  </div>
+
+                  <div className="section-card" style={{ marginBottom: 16 }}>
+                    <div className="section-head">
+                      <div>
+                        <h2 className="section-heading">Cash conversion & service health</h2>
+                        <div className="section-sub">How quickly cash moves through the operating cycle and whether supplier service levels are holding.</div>
+                      </div>
+                    </div>
+                    <Row className="g-3 mb-3">
+                      <Col sm={6} xl={3}>
+                        <Card className="kpi-card"><Card.Body>
+                          <div className="kpi-label">Collections</div>
+                          <div className="kpi-value">{moneyFormatter.format(cashCycle.paidAmount)}</div>
+                          <div className="kpi-foot">Actual cash received</div>
+                        </Card.Body></Card>
+                      </Col>
+                      <Col sm={6} xl={3}>
+                        <Card className="kpi-card"><Card.Body>
+                          <div className="kpi-label">Receivables</div>
+                          <div className="kpi-value">{moneyFormatter.format(cashCycle.outstandingReceivables)}</div>
+                          <div className="kpi-foot">Open customer balances</div>
+                        </Card.Body></Card>
+                      </Col>
+                      <Col sm={6} xl={3}>
+                        <Card className="kpi-card"><Card.Body>
+                          <div className="kpi-label">Collection rate</div>
+                          <div className="kpi-value">{Math.round(cashCycle.collectionCycle)}%</div>
+                          <div className="kpi-foot">Cash conversion efficiency</div>
+                        </Card.Body></Card>
+                      </Col>
+                      <Col sm={6} xl={3}>
+                        <Card className="kpi-card"><Card.Body>
+                          <div className="kpi-label">Supplier lead</div>
+                          <div className="kpi-value">{Math.round(cashCycle.supplierLeadAverage || 0)}d</div>
+                          <div className="kpi-foot"><StatusBadge status={cashCycle.serviceHealth} /></div>
+                        </Card.Body></Card>
+                      </Col>
+                    </Row>
+                  </div>
+
+                  <div className="section-card" style={{ marginBottom: 16 }}>
+                    <div className="section-head">
+                      <div>
+                        <h2 className="section-heading">Inventory aging board</h2>
+                        <div className="section-sub">Flag slow-moving and stale stock before it becomes excess inventory or dead stock.</div>
+                      </div>
+                    </div>
+                    <div className="table-responsive">
+                      <Table hover>
+                        <thead>
+                          <tr>
+                            <th>Product</th>
+                            <th>On hand</th>
+                            <th>Demand</th>
+                            <th>Last movement</th>
+                            <th>Health</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {inventoryAging.length === 0 ? (
+                            <tr><td colSpan="5"><div className="empty-state">No inventory aging data is available yet.</div></td></tr>
+                          ) : (
+                            inventoryAging.map((item) => (
+                              <tr key={item.id}>
+                                <td className="product-name">{item.name}</td>
+                                <td>{formatNumber(item.stock)}</td>
+                                <td>{formatNumber(item.demand)}</td>
+                                <td>{item.ageDays}d</td>
+                                <td><StatusBadge status={item.agingStatus} /></td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </Table>
+                    </div>
+                  </div>
+
+                  <div className="section-card" style={{ marginBottom: 16 }}>
+                    <div className="section-head">
+                      <div>
+                        <h2 className="section-heading">Replenishment coverage board</h2>
+                        <div className="section-sub">Plan reorder timing based on recent demand and supplier lead time.</div>
+                      </div>
+                    </div>
+                    <div className="table-responsive">
+                      <Table hover>
+                        <thead>
+                          <tr>
+                            <th>Product</th>
+                            <th>On hand</th>
+                            <th>Avg / day</th>
+                            <th>Days cover</th>
+                            <th>Lead time</th>
+                            <th>Signal</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {replenishmentCoverage.length === 0 ? (
+                            <tr><td colSpan="6"><div className="empty-state">No replenishment signals are available yet.</div></td></tr>
+                          ) : (
+                            replenishmentCoverage.map((item) => (
+                              <tr key={item.id}>
+                                <td className="product-name">{item.name}</td>
+                                <td>{formatNumber(item.stock)}</td>
+                                <td>{item.avgDailyDemand > 0 ? item.avgDailyDemand.toFixed(1) : '0.0'}</td>
+                                <td>{Number.isFinite(item.daysCover) ? `${Math.round(item.daysCover)}d` : 'No demand'}</td>
+                                <td>{item.supplierLead}d</td>
+                                <td><StatusBadge status={item.coverStatus} /></td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </Table>
+                    </div>
+                  </div>
+
+                  <div className="section-card" style={{ marginBottom: 16 }}>
+                    <div className="section-head">
+                      <div>
+                        <h2 className="section-heading">Supplier risk board</h2>
+                        <div className="section-sub">Identify vendor risk by comparing supplier on-time performance, open commitments, and lead times.</div>
+                      </div>
+                    </div>
+                    <div className="table-responsive">
+                      <Table hover>
+                        <thead>
+                          <tr>
+                            <th>Supplier</th>
+                            <th>On-time</th>
+                            <th>Lead time</th>
+                            <th>Open POs</th>
+                            <th>Committed value</th>
+                            <th>Risk</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {supplierRiskBoard.length === 0 ? (
+                            <tr><td colSpan="6"><div className="empty-state">No supplier risk signals are available yet.</div></td></tr>
+                          ) : (
+                            supplierRiskBoard.map((supplier) => (
+                              <tr key={supplier.id}>
+                                <td className="product-name">{supplier.name}</td>
+                                <td>{Math.round(supplier.onTimeRate || 0)}%</td>
+                                <td>{supplier.leadTime}d</td>
+                                <td>{supplier.openOrders}</td>
+                                <td>{moneyFormatter.format(supplier.openValue)}</td>
+                                <td><StatusBadge status={supplier.riskLevel} /></td>
+                              </tr>
+                            ))
+                          )}
                         </tbody>
                       </Table>
                     </div>

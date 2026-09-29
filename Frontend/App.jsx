@@ -1,0 +1,4215 @@
+import React from 'react';
+import 'bootstrap/dist/css/bootstrap.min.css';
+import { sanitizeStoredArray } from './storage.js';
+import {
+  Badge,
+  Button,
+  Card,
+  Col,
+  Form,
+  InputGroup,
+  Modal,
+  Row,
+  Table,
+} from 'react-bootstrap';
+
+const warehouseSeed = ['Main Warehouse'];
+const unitOptions = ['units', 'pieces', 'kg', 'g', 'tons', 'liters', 'ml', 'meters', 'cm', 'm²', 'm³', 'boxes', 'cartons', 'pallets', 'rolls', 'sheets', 'pairs', 'sets', 'packs', 'bottles', 'hours'];
+const demoUser = { name: 'Jordan Davis', email: 'jordan.davis@northstar.co', password: 'StockSense2025!', role: 'Admin' };
+const roleDefinitions = {
+  Admin: { pages: ['Today', 'Dashboard', 'Products', 'Operations', 'Warehouses', 'Suppliers', 'Procurement', 'Customers', 'Sales', 'Fulfillment', 'Returns', 'Approvals', 'Reports', 'Billing', 'Access', 'Audit', 'Forecasting', 'Exceptions', 'Settings'], badge: 'Administrator' },
+  'Operations Manager': { pages: ['Today', 'Dashboard', 'Products', 'Operations', 'Warehouses', 'Suppliers', 'Procurement', 'Customers', 'Sales', 'Fulfillment', 'Returns', 'Approvals', 'Reports', 'Billing', 'Audit', 'Forecasting', 'Exceptions'], badge: 'Operations' },
+  'Warehouse Lead': { pages: ['Today', 'Dashboard', 'Products', 'Operations', 'Warehouses', 'Fulfillment', 'Reports', 'Audit', 'Forecasting', 'Exceptions'], badge: 'Warehouse' },
+  'Finance Manager': { pages: ['Today', 'Dashboard', 'Reports', 'Billing', 'Customers', 'Sales', 'Audit', 'Forecasting', 'Exceptions'], badge: 'Finance' },
+  Viewer: { pages: ['Today', 'Dashboard', 'Reports'], badge: 'Read-only' },
+};
+const roleOptions = Object.keys(roleDefinitions);
+const currencyOptions = [
+  { code: 'USD', label: 'US Dollar (USD)' },
+  { code: 'EUR', label: 'Euro (EUR)' },
+  { code: 'GBP', label: 'British Pound (GBP)' },
+  { code: 'INR', label: 'Indian Rupee (INR)' },
+  { code: 'CAD', label: 'Canadian Dollar (CAD)' },
+  { code: 'AUD', label: 'Australian Dollar (AUD)' },
+  { code: 'JPY', label: 'Japanese Yen (JPY)' },
+  { code: 'CHF', label: 'Swiss Franc (CHF)' },
+  { code: 'SGD', label: 'Singapore Dollar (SGD)' },
+  { code: 'MXN', label: 'Mexican Peso (MXN)' },
+  { code: 'BRL', label: 'Brazilian Real (BRL)' },
+  { code: 'CNY', label: 'Chinese Yuan (CNY)' },
+];
+
+const initialProducts = [];
+const initialSuppliers = [];
+const initialPurchaseOrders = [];
+const initialCustomers = [];
+const initialSalesOrders = [];
+const initialShipments = [];
+const initialReturns = [];
+const initialPayments = [];
+
+const starterDocs = [];
+
+const starterInvoices = [];
+
+const legacyDemoNames = new Set([
+  'Steel Rods',
+  'Office Chair',
+  'Aluminum Sheets',
+  'Safety Gloves',
+  'Packing Boxes',
+  'Copper Wire',
+]);
+
+const legacyDemoIds = new Set(['RCV-24018', 'OUT-24009', 'INT-24006', 'ADJ-24002', 'INV-1042', 'BILL-0087', 'INV-1038']);
+
+const readSaved = (key, fallback) => {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (raw === null) return fallback;
+    return JSON.parse(raw);
+  } catch {
+    return fallback;
+  }
+};
+
+const writeSaved = (key, value) => {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Ignore storage failures gracefully.
+  }
+};
+
+const removeSaved = (key) => {
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // Ignore removal failures gracefully.
+  }
+};
+
+const totalStock = (product) => Object.values(product?.stock || {}).reduce((sum, value) => sum + (Number(value) || 0), 0);
+const formatNumber = (value) => Number(value || 0).toLocaleString();
+const parseDelimited = (text, delimiter = ',') => {
+  const rows = [];
+  let current = [];
+  let value = '';
+  let inQuotes = false;
+  const chars = text.replace(/^\uFEFF/, '').split('');
+
+  for (let index = 0; index < chars.length; index += 1) {
+    const char = chars[index];
+    if (char === '"') {
+      if (inQuotes && chars[index + 1] === '"') {
+        value += '"';
+        index += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+
+    if (char === delimiter && !inQuotes) {
+      current.push(value.trim());
+      value = '';
+      continue;
+    }
+
+    if ((char === '\n' || char === '\r') && !inQuotes) {
+      if (char === '\r' && chars[index + 1] === '\n') {
+        index += 1;
+      }
+      current.push(value.trim());
+      if (current.some((entry) => entry !== '')) {
+        rows.push(current);
+      }
+      current = [];
+      value = '';
+      continue;
+    }
+
+    value += char;
+  }
+
+  current.push(value.trim());
+  if (current.some((entry) => entry !== '')) {
+    rows.push(current);
+  }
+
+  return rows;
+};
+
+const downloadCsv = (filename, rows) => {
+  const csv = rows
+    .map((row) => row.map((cell) => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(','))
+    .join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = window.URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  window.setTimeout(() => window.URL.revokeObjectURL(url), 1000);
+};
+
+const isLowStock = (product, thresholdRule = 'At reorder point') => {
+  const qty = totalStock(product);
+  const reorder = Number(product.reorder) || 0;
+  if (thresholdRule === 'Below reorder point') return qty < reorder;
+  if (thresholdRule === 'At 10% below reorder point') return qty <= reorder * 0.9;
+  return qty <= reorder;
+};
+
+const statusClassMap = {
+  Done: 'status-done',
+  Ready: 'status-ready',
+  Waiting: 'status-waiting',
+  Scheduled: 'status-scheduled',
+  Canceled: 'status-canceled',
+  Draft: 'status-draft',
+  'Out of stock': 'status-canceled',
+  'Low stock': 'status-waiting',
+  Healthy: 'status-done',
+  Pending: 'status-waiting',
+  Approved: 'status-ready',
+  Returned: 'status-done',
+  Processing: 'status-scheduled',
+  Open: 'status-draft',
+  Critical: 'status-canceled',
+  Watch: 'status-waiting',
+  Stable: 'status-done',
+  Excess: 'status-scheduled',
+};
+
+function BrandLogo({ compact = false }) {
+  return (
+    <div className={`stockwise-brand ${compact ? 'stockwise-brand-compact' : ''}`} aria-label="Stockwise">
+      <span className="stockwise-mark" aria-hidden="true">
+        <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M8 12.5h24v18H8z" stroke="rgba(255,255,255,.58)" strokeWidth="1.4" />
+          <path d="m10.5 15 4 11 5.5-7 5.5 7 4-11" stroke="white" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
+          <path d="M27.8 9.5h5.2" stroke="#b9ffe8" strokeWidth="2" strokeLinecap="round" />
+        </svg>
+      </span>
+      <span className="stockwise-wordmark">Stockwise</span>
+    </div>
+  );
+}
+
+function StatusBadge({ status }) {
+  return <Badge className={`badge-soft ${statusClassMap[status] || 'status-draft'}`}>{status}</Badge>;
+}
+
+function OperationsTable({ docs, warehouseList, search, setSearch, typeFilter, setTypeFilter, statusFilter, setStatusFilter, locationFilter, setLocationFilter, ledger = false }) {
+  return (
+    <div className="section-card">
+      <div className="section-head section-head-wrap">
+        <div>
+          <h2 className="section-heading">{ledger ? 'Stock ledger' : 'Operational history'} <span className="soft-count">({docs.length})</span></h2>
+          <div className="section-sub">{ledger ? 'Every stock movement, count, and status update.' : 'Recent warehouse activity and record updates.'}</div>
+        </div>
+        <div className="toolbar toolbar-wrap">
+          <InputGroup className="search-box">
+            <InputGroup.Text className="input-glyph">⌕</InputGroup.Text>
+            <Form.Control value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search reference or product" />
+          </InputGroup>
+          {ledger && (
+            <Form.Select className="filter-select" value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}>
+              <option value="All">All types</option>
+              <option value="Receipt">Receipt</option>
+              <option value="Delivery">Delivery</option>
+              <option value="Internal">Internal</option>
+              <option value="Adjustment">Adjustment</option>
+            </Form.Select>
+          )}
+          <Form.Select className="filter-select" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+            <option value="All">All statuses</option>
+            <option value="Draft">Draft</option>
+            <option value="Waiting">Waiting</option>
+            <option value="Ready">Ready</option>
+            <option value="Scheduled">Scheduled</option>
+            <option value="Done">Done</option>
+            <option value="Canceled">Canceled</option>
+          </Form.Select>
+          <Form.Select className="filter-select" value={locationFilter} onChange={(event) => setLocationFilter(event.target.value)}>
+            <option value="All">All locations</option>
+            {warehouseList.map((location) => <option key={location} value={location}>{location}</option>)}
+          </Form.Select>
+        </div>
+      </div>
+      <div className="table-responsive">
+        <Table hover>
+          <thead>
+            <tr>
+              <th>Reference</th>
+              <th>Type</th>
+              <th>Product</th>
+              <th>Qty</th>
+              <th>{ledger ? 'Partner / movement' : 'Location'}</th>
+              <th>Recorded by</th>
+              <th>Status</th>
+              <th>Date</th>
+            </tr>
+          </thead>
+          <tbody>
+            {docs.length === 0 ? (
+              <tr>
+                <td colSpan="8">
+                  <div className="empty-state">No movement records match the current filters.</div>
+                </td>
+              </tr>
+            ) : (
+              docs.map((doc) => (
+                <tr key={`${doc.id}-${doc.type}`}>
+                  <td><strong className="ref-code">{doc.id}</strong></td>
+                  <td>{doc.type}</td>
+                  <td><span className="product-name">{doc.product}</span></td>
+                  <td>{doc.type === 'Receipt' ? '+' : doc.type === 'Delivery' ? '−' : doc.type === 'Internal' ? '⇄' : '±'} {formatNumber(doc.qty)}</td>
+                  <td>{doc.partner || doc.location}</td>
+                  <td>{doc.actor || 'System'}</td>
+                  <td><StatusBadge status={doc.status} /></td>
+                  <td>{doc.date}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </Table>
+      </div>
+    </div>
+  );
+}
+
+export default function App() {
+  const [products, setProducts] = React.useState(() => {
+    const saved = readSaved('stockwise-products', initialProducts);
+    return sanitizeStoredArray(saved, initialProducts, (entry) => (
+      typeof entry === 'object' && entry && legacyDemoNames.has(entry.name)
+    ));
+  });
+  const [docs, setDocs] = React.useState(() => {
+    const saved = readSaved('stockwise-operations', starterDocs);
+    return sanitizeStoredArray(saved, starterDocs, (entry) => (
+      typeof entry === 'object' && entry && legacyDemoIds.has(entry.id)
+    ));
+  });
+  const [invoices, setInvoices] = React.useState(() => {
+    const saved = readSaved('stockwise-billing', starterInvoices);
+    return sanitizeStoredArray(saved, starterInvoices, (entry) => (
+      typeof entry === 'object' && entry && legacyDemoIds.has(entry.id)
+    ));
+  });
+  const [warehouseList, setWarehouseList] = React.useState(() => {
+    const saved = readSaved('stockwise-locations', warehouseSeed);
+    return sanitizeStoredArray(saved, warehouseSeed);
+  });
+  const [suppliers, setSuppliers] = React.useState(() => {
+    const saved = readSaved('stockwise-suppliers', initialSuppliers);
+    return sanitizeStoredArray(saved, initialSuppliers);
+  });
+  const [purchaseOrders, setPurchaseOrders] = React.useState(() => {
+    const saved = readSaved('stockwise-purchase-orders', initialPurchaseOrders);
+    return sanitizeStoredArray(saved, initialPurchaseOrders);
+  });
+  const [customers, setCustomers] = React.useState(() => {
+    const saved = readSaved('stockwise-customers', initialCustomers);
+    return sanitizeStoredArray(saved, initialCustomers);
+  });
+  const [salesOrders, setSalesOrders] = React.useState(() => {
+    const saved = readSaved('stockwise-sales-orders', initialSalesOrders);
+    return sanitizeStoredArray(saved, initialSalesOrders);
+  });
+  const [shipments, setShipments] = React.useState(() => {
+    const saved = readSaved('stockwise-shipments', initialShipments);
+    return sanitizeStoredArray(saved, initialShipments);
+  });
+  const [returns, setReturns] = React.useState(() => {
+    const saved = readSaved('stockwise-returns', initialReturns);
+    return sanitizeStoredArray(saved, initialReturns);
+  });
+  const [payments, setPayments] = React.useState(() => {
+    const saved = readSaved('stockwise-payments', initialPayments);
+    return sanitizeStoredArray(saved, initialPayments);
+  });
+  const [settings, setSettings] = React.useState(() => {
+    const saved = readSaved('stockwise-settings', {});
+    return {
+      alertRule: ['At reorder point', 'Below reorder point', 'At 10% below reorder point'].includes(saved?.alertRule) ? saved.alertRule : 'At reorder point',
+      defaultUnit: unitOptions.includes(saved?.defaultUnit) ? saved.defaultUnit : 'units',
+      currency: currencyOptions.some((item) => item.code === saved?.currency) ? saved.currency : 'USD',
+    };
+  });
+  const [authenticated, setAuthenticated] = React.useState(() => readSaved('stockwise-session', false));
+  const [themeMode, setThemeMode] = React.useState('light');
+  const [users, setUsers] = React.useState(() => readSaved('stockwise-users', [demoUser]));
+  const [authMode, setAuthMode] = React.useState('login');
+  const [loginForm, setLoginForm] = React.useState({ name: '', email: '', password: '', confirmPassword: '', role: 'Operations Manager' });
+  const [loginError, setLoginError] = React.useState('');
+  const [page, setPage] = React.useState('Today');
+  const [search, setSearch] = React.useState('');
+  const [globalSearch, setGlobalSearch] = React.useState('');
+  const [commandPaletteOpen, setCommandPaletteOpen] = React.useState(false);
+  const [notificationOpen, setNotificationOpen] = React.useState(false);
+  const [modal, setModal] = React.useState('');
+  const [toast, setToast] = React.useState('');
+  const [confirmState, setConfirmState] = React.useState(null);
+  const [supplierForm, setSupplierForm] = React.useState({ name: '', contact: '', email: '', phone: '', leadTime: '5', slaTarget: '98', category: 'General' });
+  const [purchaseForm, setPurchaseForm] = React.useState({ supplierId: '', productId: '', qty: '0', unitCost: '0', expectedDate: '', location: warehouseSeed[0], status: 'Draft' });
+  const [customerForm, setCustomerForm] = React.useState({ name: '', email: '', phone: '', tier: 'Standard', region: 'North' });
+  const [salesForm, setSalesForm] = React.useState({ customerId: '', productId: '', qty: '1', unitPrice: '0', status: 'Draft', location: warehouseSeed[0], expectedDate: '' });
+  const [shipmentForm, setShipmentForm] = React.useState({ orderId: '', carrier: 'UPS', tracking: '', status: 'Ready', location: warehouseSeed[0] });
+  const [paymentForm, setPaymentForm] = React.useState({ invoiceId: '', customer: '', amount: '0', method: 'Bank transfer', date: '' });
+  const [returnForm, setReturnForm] = React.useState({ orderId: '', customerId: '', productId: '', qty: '1', reason: 'Damaged', location: warehouseSeed[0] });
+  const [isOnline, setIsOnline] = React.useState(() => navigator.onLine);
+  const [importPreview, setImportPreview] = React.useState([]);
+  const [importMessage, setImportMessage] = React.useState('');
+  const [productForm, setProductForm] = React.useState({
+    id: null,
+    name: '',
+    sku: '',
+    category: 'Raw Materials',
+    material: '',
+    price: '0',
+    unit: 'units',
+    reorder: '10',
+    stock: Object.fromEntries(warehouseSeed.map((location) => [location, '0'])),
+  });
+  const [operationForm, setOperationForm] = React.useState({
+    type: 'Receipt',
+    productId: '',
+    qty: '0',
+    counted: '0',
+    partner: '',
+    location: warehouseSeed[0],
+    destination: warehouseSeed[0],
+  });
+  const [invoiceForm, setInvoiceForm] = React.useState({ kind: 'Invoice', party: '', amount: '', dueDate: '' });
+  const [warehouseForm, setWarehouseForm] = React.useState({ name: '' });
+  const [renameTarget, setRenameTarget] = React.useState('');
+  const [renameValue, setRenameValue] = React.useState('');
+  const [typeFilter, setTypeFilter] = React.useState('All');
+  const [statusFilter, setStatusFilter] = React.useState('All');
+  const [locationFilter, setLocationFilter] = React.useState('All');
+  const [categoryFilter, setCategoryFilter] = React.useState('All');
+  const [productSort, setProductSort] = React.useState('name-asc');
+
+  React.useEffect(() => {
+    const handleOnlineStatus = () => setIsOnline(navigator.onLine);
+    window.addEventListener('online', handleOnlineStatus);
+    window.addEventListener('offline', handleOnlineStatus);
+    return () => {
+      window.removeEventListener('online', handleOnlineStatus);
+      window.removeEventListener('offline', handleOnlineStatus);
+    };
+  }, []);
+
+  React.useEffect(() => {
+    const handleKeyDown = (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setCommandPaletteOpen(true);
+      }
+      if (event.key === 'Escape') {
+        setCommandPaletteOpen(false);
+        setNotificationOpen(false);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  React.useEffect(() => {
+    writeSaved('stockwise-products', products);
+    writeSaved('stockwise-operations', docs);
+    writeSaved('stockwise-billing', invoices);
+    writeSaved('stockwise-locations', warehouseList);
+    writeSaved('stockwise-suppliers', suppliers);
+    writeSaved('stockwise-purchase-orders', purchaseOrders);
+    writeSaved('stockwise-customers', customers);
+    writeSaved('stockwise-sales-orders', salesOrders);
+    writeSaved('stockwise-shipments', shipments);
+    writeSaved('stockwise-returns', returns);
+    writeSaved('stockwise-payments', payments);
+    writeSaved('stockwise-settings', settings);
+    writeSaved('stockwise-users', users);
+  }, [products, docs, invoices, warehouseList, suppliers, purchaseOrders, customers, salesOrders, shipments, returns, payments, settings, users]);
+
+  const displayUser = authenticated && typeof authenticated === 'object' ? authenticated : demoUser;
+  const userRole = displayUser.role || 'Admin';
+  const userInitials = displayUser.name.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase();
+  const currentThemeClass = themeMode === 'dark' ? 'theme-dark' : 'theme-light';
+  const canAccessPage = (targetPage) => (roleDefinitions[userRole]?.pages || []).includes(targetPage);
+  const canManageInventory = ['Admin', 'Operations Manager', 'Warehouse Lead'].includes(userRole);
+  const canManageFinance = ['Admin', 'Finance Manager', 'Operations Manager'].includes(userRole);
+  const canManageUsers = ['Admin', 'Operations Manager'].includes(userRole);
+  const moneyFormatter = React.useMemo(
+    () => new Intl.NumberFormat(undefined, { style: 'currency', currency: settings.currency }),
+    [settings.currency]
+  );
+
+  React.useEffect(() => {
+    if (authenticated && !canAccessPage(page)) {
+      setPage('Today');
+    }
+  }, [authenticated, page, userRole]);
+
+  const showToast = (message) => {
+    setToast(message);
+    window.setTimeout(() => setToast(''), 2500);
+  };
+
+  const handleLogin = (event) => {
+    event.preventDefault();
+    const email = loginForm.email.trim().toLowerCase();
+
+    if (authMode === 'register') {
+      const name = loginForm.name.trim();
+      if (!name) {
+        setLoginError('Please enter your name.');
+        return;
+      }
+      if (loginForm.password.length < 8) {
+        setLoginError('Password must be at least 8 characters long.');
+        return;
+      }
+      if (loginForm.password !== loginForm.confirmPassword) {
+        setLoginError('Passwords do not match.');
+        return;
+      }
+      if (users.some((user) => user.email.toLowerCase() === email)) {
+        setLoginError('An account with this email already exists.');
+        return;
+      }
+      const user = { name, email, password: loginForm.password, role: loginForm.role || 'Operations Manager' };
+      setUsers((current) => [...current, user]);
+      setAuthenticated(user);
+      writeSaved('stockwise-session', user);
+      setLoginForm({ name: '', email: '', password: '', confirmPassword: '', role: 'Operations Manager' });
+      setLoginError('');
+      return;
+    }
+
+    const user = users.find((candidate) => candidate.email.toLowerCase() === email && candidate.password === loginForm.password);
+    if (!user) {
+      setLoginError('Email or password is incorrect.');
+      return;
+    }
+    setAuthenticated(user);
+    writeSaved('stockwise-session', user);
+    setLoginError('');
+  };
+
+  const logout = () => {
+    removeSaved('stockwise-session');
+    setAuthenticated(false);
+  };
+
+  const openProductModal = () => {
+    setProductForm({
+      id: null,
+      name: '',
+      sku: '',
+      category: 'Raw Materials',
+      material: '',
+      price: '0',
+      unit: settings.defaultUnit,
+      reorder: '10',
+      stock: Object.fromEntries(warehouseList.map((location) => [location, '0'])),
+    });
+    setModal('product');
+  };
+
+  const editProduct = (product) => {
+    setProductForm({
+      id: product.id,
+      name: product.name,
+      sku: product.sku,
+      category: product.category,
+      material: product.material || '',
+      price: String(product.price ?? 0),
+      unit: product.unit,
+      reorder: String(product.reorder ?? 0),
+      stock: Object.fromEntries(warehouseList.map((location) => [location, String(product.stock?.[location] || 0)])),
+    });
+    setModal('product');
+  };
+
+  const saveProduct = (event) => {
+    event.preventDefault();
+    const name = productForm.name.trim();
+    const sku = productForm.sku.trim().toUpperCase();
+    if (!name || !sku || !productForm.unit.trim()) {
+      showToast('Product name, SKU, and unit are required.');
+      return;
+    }
+
+    const duplicate = products.some((product) => product.id !== productForm.id && product.sku.toUpperCase() === sku);
+    if (duplicate) {
+      showToast('That SKU is already in use.');
+      return;
+    }
+
+    const nextStock = Object.fromEntries(
+      warehouseList.map((location) => [location, Number(productForm.stock?.[location] ?? 0)])
+    );
+
+    const nextProduct = {
+      id: productForm.id ?? Date.now(),
+      name,
+      sku,
+      category: productForm.category,
+      material: productForm.material.trim(),
+      price: Number(productForm.price) || 0,
+      unit: productForm.unit.trim(),
+      reorder: Number(productForm.reorder) || 0,
+      stock: nextStock,
+    };
+
+    setProducts((current) => {
+      if (productForm.id) {
+        return current.map((item) => (item.id === productForm.id ? nextProduct : item));
+      }
+      return [nextProduct, ...current];
+    });
+
+    setModal('');
+    showToast(productForm.id ? 'Product updated.' : 'Product added to the catalog.');
+  };
+
+  const deleteProduct = (product) => {
+    setConfirmState({
+      title: 'Delete product',
+      body: `Remove ${product.name} from the catalog? This does not remove the historical movement log.`,
+      confirmLabel: 'Delete product',
+      variant: 'danger',
+      onConfirm: () => {
+        setProducts((current) => current.filter((entry) => entry.id !== product.id));
+        setConfirmState(null);
+        showToast('Product deleted from the catalog.');
+      },
+    });
+  };
+
+  const saveInvoice = (event) => {
+    event.preventDefault();
+    if (!invoiceForm.party.trim()) {
+      showToast('Enter a customer or supplier name.');
+      return;
+    }
+    const amount = Number(invoiceForm.amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      showToast('Enter a valid amount greater than zero.');
+      return;
+    }
+
+    const prefix = invoiceForm.kind === 'Invoice' ? 'INV' : 'BILL';
+    const record = {
+      id: `${prefix}-${Date.now().toString().slice(-6)}`,
+      kind: invoiceForm.kind,
+      party: invoiceForm.party.trim(),
+      amount,
+      dueDate: invoiceForm.dueDate,
+      status: 'Unpaid',
+    };
+    setInvoices((current) => [record, ...current]);
+    setInvoiceForm({ kind: 'Invoice', party: '', amount: '', dueDate: '' });
+    setModal('');
+    showToast(`${invoiceForm.kind} recorded.`);
+  };
+
+  const toggleInvoiceStatus = (invoiceId) => {
+    setInvoices((current) => current.map((invoice) => (
+      invoice.id === invoiceId
+        ? { ...invoice, status: invoice.status === 'Paid' ? 'Unpaid' : 'Paid' }
+        : invoice
+    )));
+  };
+
+  const recordPayment = (event) => {
+    event.preventDefault();
+    const invoice = invoices.find((entry) => String(entry.id) === String(paymentForm.invoiceId));
+    const paymentAmount = Number(paymentForm.amount) || 0;
+    if (!invoice) {
+      showToast('Select a valid invoice to record payment against.');
+      return;
+    }
+    if (paymentAmount <= 0) {
+      showToast('Payment amount must be greater than zero.');
+      return;
+    }
+
+    const totalReceived = payments
+      .filter((entry) => String(entry.invoiceId) === String(invoice.id))
+      .reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
+    const outstandingBalance = Math.max(invoice.amount - totalReceived, 0);
+    if (paymentAmount > outstandingBalance) {
+      showToast(`Payment exceeds the outstanding balance of ${new Intl.NumberFormat(undefined, { style: 'currency', currency: settings.currency }).format(outstandingBalance)}.`);
+      return;
+    }
+
+    const payment = {
+      id: `PAY-${Date.now().toString().slice(-6)}`,
+      invoiceId: invoice.id,
+      customer: paymentForm.customer || invoice.party,
+      amount: paymentAmount,
+      method: paymentForm.method,
+      date: paymentForm.date || new Date().toISOString().slice(0, 10),
+      createdAt: new Date().toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }),
+    };
+
+    setPayments((current) => [payment, ...current]);
+    setInvoices((current) => current.map((entry) => {
+      if (entry.id !== invoice.id) return entry;
+      const nextReceived = payments
+        .filter((item) => String(item.invoiceId) === String(entry.id))
+        .reduce((sum, item) => sum + Number(item.amount || 0), 0) + paymentAmount;
+      return { ...entry, status: nextReceived >= Number(entry.amount || 0) ? 'Paid' : 'Unpaid' };
+    }));
+    setPaymentForm({ invoiceId: '', customer: '', amount: '0', method: 'Bank transfer', date: '' });
+    setModal('');
+    showToast('Payment recorded and invoice updated.');
+  };
+
+  const deleteInvoice = (invoice) => {
+    setConfirmState({
+      title: 'Delete billing record',
+      body: `Remove ${invoice.id} from the billing ledger?`,
+      confirmLabel: 'Delete record',
+      variant: 'danger',
+      onConfirm: () => {
+        setInvoices((current) => current.filter((entry) => entry.id !== invoice.id));
+        setConfirmState(null);
+        showToast('Billing record deleted.');
+      },
+    });
+  };
+
+  const saveWarehouse = (event) => {
+    event.preventDefault();
+    const name = warehouseForm.name.trim();
+    if (!name) {
+      showToast('Enter a warehouse or location name.');
+      return;
+    }
+    if (warehouseList.some((location) => location.toLowerCase() === name.toLowerCase())) {
+      showToast('This location already exists.');
+      return;
+    }
+    setWarehouseList((current) => [...current, name]);
+    setProducts((current) => current.map((product) => ({
+      ...product,
+      stock: { ...product.stock, [name]: 0 },
+    })));
+    setWarehouseForm({ name: '' });
+    setModal('');
+    showToast('Location added.');
+  };
+
+  const renameWarehouse = () => {
+    if (!renameTarget || !renameValue.trim()) return;
+    const nextName = renameValue.trim();
+    if (warehouseList.some((location) => location.toLowerCase() === nextName.toLowerCase() && location !== renameTarget)) {
+      showToast('A location with that name already exists.');
+      return;
+    }
+    setWarehouseList((current) => current.map((location) => (location === renameTarget ? nextName : location)));
+    setProducts((current) => current.map((product) => {
+      const stock = { ...product.stock };
+      if (Object.prototype.hasOwnProperty.call(stock, renameTarget)) {
+        stock[nextName] = stock[renameTarget];
+        delete stock[renameTarget];
+      }
+      return { ...product, stock };
+    }));
+    setDocs((current) => current.map((doc) => ({
+      ...doc,
+      location: doc.location === renameTarget ? nextName : doc.location,
+      partner: String(doc.partner || '').replaceAll(renameTarget, nextName),
+    })));
+    setRenameTarget('');
+    setRenameValue('');
+    setModal('');
+    showToast('Location renamed.');
+  };
+
+  const deleteWarehouse = (location) => {
+    if (warehouseList.length <= 1) {
+      showToast('At least one location must remain active.');
+      return;
+    }
+    const hasStock = products.some((product) => Number(product.stock?.[location] || 0) > 0);
+    const usedInHistory = docs.some((doc) => doc.location === location || String(doc.partner || '').includes(location));
+    if (hasStock || usedInHistory) {
+      showToast('Clear or relocate stock before removing this location.');
+      return;
+    }
+    setConfirmState({
+      title: 'Remove location',
+      body: `Delete ${location} from the workspace? This cannot be undone.`,
+      confirmLabel: 'Remove location',
+      variant: 'danger',
+      onConfirm: () => {
+        setWarehouseList((current) => current.filter((entry) => entry !== location));
+        setProducts((current) => current.map((product) => {
+          const stock = { ...product.stock };
+          delete stock[location];
+          return { ...product, stock };
+        }));
+        setConfirmState(null);
+        showToast('Location removed from the workspace.');
+      },
+    });
+  };
+
+  const openOperation = (type = 'Receipt') => {
+    if (products.length === 0) {
+      setModal('product');
+      showToast('Add a product first before creating an operation.');
+      return;
+    }
+
+    const selectedProduct = products[0];
+    setOperationForm({
+      type,
+      productId: String(selectedProduct.id),
+      qty: '0',
+      counted: '0',
+      partner: '',
+      location: warehouseList[0] || '',
+      destination: warehouseList[1] || warehouseList[0] || '',
+    });
+    setModal('operation');
+  };
+
+  const saveOperation = (event) => {
+    event.preventDefault();
+    const product = products.find((entry) => entry.id === Number(operationForm.productId));
+    if (!product) {
+      showToast('Choose a valid product before recording an operation.');
+      return;
+    }
+
+    if (!operationForm.location) {
+      showToast('Choose a valid source location.');
+      return;
+    }
+
+    const qty = Number(operationForm.type === 'Adjustment' ? operationForm.counted : operationForm.qty);
+    if (!Number.isFinite(qty) || qty < 0 || (operationForm.type !== 'Adjustment' && qty === 0)) {
+      showToast('Enter a valid non-negative quantity.');
+      return;
+    }
+
+    if (operationForm.type === 'Internal' && (!operationForm.destination || operationForm.destination === operationForm.location)) {
+      showToast('Choose a different destination for an internal transfer.');
+      return;
+    }
+
+    const sourceStock = Number(product.stock?.[operationForm.location] || 0);
+    if ((operationForm.type === 'Delivery' || operationForm.type === 'Internal') && sourceStock < qty) {
+      showToast('Not enough stock in the selected source location.');
+      return;
+    }
+
+    const updatedProducts = products.map((entry) => {
+      if (entry.id !== product.id) return entry;
+      const nextStock = { ...entry.stock };
+      if (operationForm.type === 'Receipt') {
+        nextStock[operationForm.location] = (Number(nextStock[operationForm.location]) || 0) + qty;
+      }
+      if (operationForm.type === 'Delivery') {
+        nextStock[operationForm.location] = (Number(nextStock[operationForm.location]) || 0) - qty;
+      }
+      if (operationForm.type === 'Internal') {
+        nextStock[operationForm.location] = (Number(nextStock[operationForm.location]) || 0) - qty;
+        nextStock[operationForm.destination] = (Number(nextStock[operationForm.destination]) || 0) + qty;
+      }
+      if (operationForm.type === 'Adjustment') {
+        nextStock[operationForm.location] = qty;
+      }
+      return { ...entry, stock: nextStock };
+    });
+
+    setProducts(updatedProducts);
+    const reference = `${operationForm.type === 'Receipt' ? 'RCV' : operationForm.type === 'Delivery' ? 'OUT' : operationForm.type === 'Internal' ? 'INT' : 'ADJ'}-${Date.now().toString().slice(-5)}`;
+    const actionDoc = {
+      id: reference,
+      type: operationForm.type,
+      product: product.name,
+      qty,
+      location: operationForm.location,
+      partner: operationForm.type === 'Internal' ? `${operationForm.location} → ${operationForm.destination}` : operationForm.partner || 'Manual entry',
+      status: 'Done',
+      actor: displayUser.name,
+      date: new Date().toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }),
+    };
+    setDocs((current) => [actionDoc, ...current]);
+    setModal('');
+    showToast(`${operationForm.type} recorded successfully.`);
+  };
+
+  const previewImport = async (fileList) => {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+
+    const validRows = [];
+    let skipped = 0;
+    const parseIssues = [];
+
+    for (const file of files) {
+      const extension = file.name.split('.').pop()?.toLowerCase();
+      if (!['csv', 'tsv', 'txt', 'json'].includes(extension)) {
+        parseIssues.push(`${file.name} (unsupported format)`);
+        continue;
+      }
+
+      try {
+        const text = await file.text();
+        let rows = [];
+        if (extension === 'json') {
+          const parsed = JSON.parse(text);
+          rows = Array.isArray(parsed) ? parsed : Array.isArray(parsed.products) ? parsed.products : [];
+        } else {
+          const delimiter = extension === 'tsv' ? '\t' : ',';
+          const parsedRows = parseDelimited(text, delimiter);
+          if (parsedRows.length < 2) {
+            throw new Error('A header row and at least one product row are required.');
+          }
+          const headers = parsedRows[0].map((header) => header.toLowerCase().replace(/[^a-z0-9]+/g, ''));
+          rows = parsedRows.slice(1).map((row) => Object.fromEntries(headers.map((header, index) => [header, row[index] ?? ''])));
+        }
+
+        rows.forEach((record) => {
+          if (!record || typeof record !== 'object') {
+            skipped += 1;
+            return;
+          }
+          const name = String(record.name || record.product || record.productname || '').trim();
+          const sku = String(record.sku || record.code || record.itemcode || '').trim().toUpperCase();
+          const quantity = Number(record.quantity || record.qty || record.stock || record.onhand || 0);
+          const price = Number(record.price || record.unitprice || record.cost || 0);
+          const reorder = Number(record.reorder || record.reorderpoint || record.minimumstock || 0);
+          if (!name || !sku || !Number.isFinite(quantity) || quantity < 0 || !Number.isFinite(price) || price < 0 || !Number.isFinite(reorder) || reorder < 0) {
+            skipped += 1;
+            return;
+          }
+          validRows.push({
+            name,
+            sku,
+            material: String(record.material || record.composition || '').trim(),
+            category: String(record.category || 'Other').trim() || 'Other',
+            unit: String(record.unit || record.uom || settings.defaultUnit).trim() || settings.defaultUnit,
+            quantity,
+            price,
+            reorder,
+          });
+        });
+      } catch (error) {
+        parseIssues.push(`${file.name} (${error.message || 'unable to parse'})`);
+      }
+    }
+
+    setImportPreview(validRows);
+    setImportMessage(
+      validRows.length
+        ? `${validRows.length} valid product rows ready to import${skipped ? `; ${skipped} rows skipped` : ''}.`
+        : `No valid rows were detected. ${parseIssues.join(', ') || 'Review the file format and try again.'}`
+    );
+  };
+
+  const commitImport = () => {
+    if (!importPreview.length) {
+      showToast('Import preview is empty.');
+      return;
+    }
+
+    const existingSkus = new Set(products.map((product) => product.sku.toUpperCase()));
+    const inserted = [];
+    importPreview.forEach((item, index) => {
+      if (existingSkus.has(item.sku)) return;
+      const newProduct = {
+        id: Date.now() + index,
+        name: item.name,
+        sku: item.sku,
+        category: item.category,
+        material: item.material,
+        price: item.price,
+        unit: item.unit,
+        reorder: item.reorder,
+        stock: Object.fromEntries(warehouseList.map((location, locationIndex) => [location, locationIndex === 0 ? item.quantity : 0])),
+      };
+      inserted.push(newProduct);
+      existingSkus.add(item.sku);
+    });
+
+    if (inserted.length) {
+      setProducts((current) => [...inserted, ...current]);
+    }
+
+    setModal('');
+    setImportPreview([]);
+    setImportMessage('');
+    showToast(`${inserted.length} product${inserted.length === 1 ? '' : 's'} imported.`);
+  };
+
+  const filteredProducts = React.useMemo(() => {
+    return [...products]
+      .filter((product) => {
+        const haystack = `${product.name} ${product.sku} ${product.category} ${product.material || ''}`.toLowerCase();
+        const matchesSearch = haystack.includes(search.toLowerCase());
+        const matchesCategory = categoryFilter === 'All' || product.category === categoryFilter;
+        const matchesLocation = locationFilter === 'All' || Number(product.stock?.[locationFilter] || 0) > 0;
+        return matchesSearch && matchesCategory && matchesLocation;
+      })
+      .sort((first, second) => {
+        const direction = productSort.endsWith('-desc') ? -1 : 1;
+        const field = productSort.replace(/-(asc|desc)/, '');
+        if (field === 'stock') {
+          return (totalStock(first) - totalStock(second)) * direction;
+        }
+        if (field === 'price') {
+          return ((Number(first.price) || 0) - (Number(second.price) || 0)) * direction;
+        }
+        return (String(first[field] || '').localeCompare(String(second[field] || ''))) * direction;
+      });
+  }, [products, search, categoryFilter, locationFilter, productSort]);
+
+  const visibleOperationDocs = React.useMemo(() => {
+    return docs.filter((doc) => {
+      const matchesType = typeFilter === 'All' || doc.type === typeFilter;
+      const matchesStatus = statusFilter === 'All' || doc.status === statusFilter;
+      const matchesLocation = locationFilter === 'All' || doc.location === locationFilter || String(doc.partner || '').includes(locationFilter);
+      const matchesSearch = `${doc.id} ${doc.product} ${doc.partner || ''}`.toLowerCase().includes(search.toLowerCase());
+      return matchesType && matchesStatus && matchesLocation && matchesSearch;
+    });
+  }, [docs, search, typeFilter, statusFilter, locationFilter]);
+
+  const lowStockProducts = products.filter((product) => isLowStock(product, settings.alertRule));
+  const outOfStockCount = products.filter((product) => totalStock(product) === 0).length;
+  const totalInventoryValue = products.reduce((sum, product) => sum + totalStock(product) * Number(product.price || 0), 0);
+  const totalTrackedUnits = products.reduce((sum, product) => sum + totalStock(product), 0);
+  const activeProductCount = products.filter((product) => totalStock(product) > 0).length;
+  const currentReceipts = docs.filter((doc) => doc.type === 'Receipt' && doc.status !== 'Done').length;
+  const approvalQueue = React.useMemo(() => {
+    const queue = [];
+    returns.filter((item) => item.status === 'Pending').forEach((item) => {
+      queue.push({ id: `APP-${item.id}`, type: 'Return', subject: item.productName, reference: item.id, relatedId: item.id, amount: item.qty, status: item.status, createdAt: item.createdAt });
+    });
+    purchaseOrders.filter((order) => order.status === 'Draft').forEach((order) => {
+      queue.push({ id: `APP-PO-${order.id}`, type: 'Purchase order', subject: order.productName, reference: order.id, relatedId: order.id, amount: Number(order.total || 0), status: order.status, createdAt: order.createdAt });
+    });
+    salesOrders.filter((order) => order.status === 'Draft').forEach((order) => {
+      queue.push({ id: `APP-SO-${order.id}`, type: 'Sales order', subject: order.productName, reference: order.id, relatedId: order.id, amount: Number(order.total || 0), status: order.status, createdAt: order.createdAt });
+    });
+    return queue.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+  }, [returns, purchaseOrders, salesOrders]);
+  const auditTrail = React.useMemo(() => {
+    const entries = [
+      ...docs.map((doc) => ({
+        id: `op-${doc.id}`,
+        type: 'Inventory movement',
+        event: `${doc.type} · ${doc.product}`,
+        actor: doc.actor || 'System',
+        reference: doc.id,
+        status: doc.status,
+        timestamp: doc.date || new Date().toISOString().slice(0, 10),
+        amount: doc.qty,
+      })),
+      ...purchaseOrders.map((order) => ({
+        id: `po-${order.id}`,
+        type: 'Purchase order',
+        event: `PO ${order.status} · ${order.productName}`,
+        actor: order.actor || 'Procurement',
+        reference: order.id,
+        status: order.status,
+        timestamp: order.createdAt || new Date().toISOString().slice(0, 10),
+        amount: Number(order.total || 0),
+      })),
+      ...salesOrders.map((order) => ({
+        id: `so-${order.id}`,
+        type: 'Sales order',
+        event: `SO ${order.status} · ${order.productName}`,
+        actor: order.actor || 'Sales',
+        reference: order.id,
+        status: order.status,
+        timestamp: order.createdAt || new Date().toISOString().slice(0, 10),
+        amount: Number(order.total || 0),
+      })),
+      ...returns.map((item) => ({
+        id: `ret-${item.id}`,
+        type: 'Return',
+        event: `Return ${item.status} · ${item.productName}`,
+        actor: item.actor || 'Customer service',
+        reference: item.id,
+        status: item.status,
+        timestamp: item.createdAt || new Date().toISOString().slice(0, 10),
+        amount: Number(item.qty || 0),
+      })),
+      ...payments.map((payment) => ({
+        id: `pay-${payment.id || payment.invoiceId}`,
+        type: 'Payment',
+        event: `Payment received · ${payment.customer || payment.invoiceId}`,
+        actor: payment.actor || 'Finance',
+        reference: payment.invoiceId || payment.id,
+        status: payment.status || 'Recorded',
+        timestamp: payment.date || new Date().toISOString().slice(0, 10),
+        amount: Number(payment.amount || 0),
+      })),
+    ];
+
+    return entries
+      .filter((entry) => entry && entry.timestamp)
+      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+      .slice(0, 24);
+  }, [docs, purchaseOrders, salesOrders, returns, payments]);
+  const forecastSignals = React.useMemo(() => {
+    return products
+      .map((product) => {
+        const stock = totalStock(product);
+        const reorder = Number(product.reorder) || 0;
+        const demand = salesOrders
+          .filter((order) => order.productName === product.name)
+          .reduce((sum, order) => sum + Number(order.qty || 0), 0);
+        const recentReceipts = docs
+          .filter((doc) => doc.product === product.name && doc.type === 'Receipt')
+          .reduce((sum, doc) => sum + Number(doc.qty || 0), 0);
+        const recentDeliveries = docs
+          .filter((doc) => doc.product === product.name && doc.type === 'Delivery')
+          .reduce((sum, doc) => sum + Number(doc.qty || 0), 0);
+        const netMovement = recentReceipts - recentDeliveries;
+        const avgDailyDemand = demand > 0 ? demand / 30 : 0;
+        const coverageDays = avgDailyDemand > 0 ? stock / avgDailyDemand : stock > 0 ? 999 : 0;
+
+        let risk = 'Stable';
+        let recommendation = 'Maintain';
+
+        if (stock <= reorder) {
+          risk = 'Critical';
+          recommendation = 'Reorder now';
+        } else if (stock <= reorder * 1.25) {
+          risk = 'Watch';
+          recommendation = 'Monitor purchase timing';
+        } else if (stock >= reorder * 3) {
+          risk = 'Excess';
+          recommendation = 'Review slow-moving stock';
+        }
+
+        return {
+          ...product,
+          stock,
+          reorder,
+          demand,
+          netMovement,
+          coverageDays,
+          risk,
+          recommendation,
+        };
+      })
+      .sort((a, b) => {
+        const riskOrder = { Critical: 0, Watch: 1, Stable: 2, Excess: 3 };
+        return riskOrder[a.risk] - riskOrder[b.risk] || b.coverageDays - a.coverageDays;
+      })
+      .slice(0, 12);
+  }, [products, salesOrders, docs]);
+  const exceptionQueue = React.useMemo(() => {
+    const queue = [];
+
+    lowStockProducts.forEach((product) => {
+      queue.push({
+        id: `EXC-${product.id}`,
+        type: 'Low stock',
+        subject: product.name,
+        detail: `${formatNumber(totalStock(product))} units on hand against a reorder point of ${formatNumber(product.reorder)}`,
+        severity: totalStock(product) === 0 ? 'Critical' : 'Watch',
+        owner: 'Operations',
+        relatedPage: 'Products',
+      });
+    });
+
+    approvalQueue.forEach((item) => {
+      queue.push({
+        id: `EXC-${item.id}`,
+        type: item.type,
+        subject: item.subject,
+        detail: `Reference ${item.reference} is awaiting approval`,
+        severity: item.status === 'Draft' ? 'Watch' : 'Critical',
+        owner: 'Approvals',
+        relatedPage: 'Approvals',
+      });
+    });
+
+    shipments.filter((shipment) => shipment.status !== 'Delivered').forEach((shipment) => {
+      queue.push({
+        id: `EXC-${shipment.id}`,
+        type: 'Shipment',
+        subject: shipment.orderId,
+        detail: `${shipment.carrier} is ${shipment.status.toLowerCase()} for ${shipment.tracking || 'tracking not assigned'}`,
+        severity: shipment.status === 'Delayed' ? 'Critical' : 'Watch',
+        owner: 'Fulfillment',
+        relatedPage: 'Fulfillment',
+      });
+    });
+
+    invoices.filter((item) => item.status === 'Unpaid' && item.dueDate && new Date(item.dueDate) < new Date()).forEach((item) => {
+      queue.push({
+        id: `EXC-${item.id}`,
+        type: 'Invoice',
+        subject: item.party,
+        detail: `${item.kind} ${item.id} is overdue`,
+        severity: 'Watch',
+        owner: 'Finance',
+        relatedPage: 'Billing',
+      });
+    });
+
+    return queue.slice(0, 12);
+  }, [lowStockProducts, approvalQueue, shipments, invoices]);
+  const procurementRecommendations = React.useMemo(() => {
+    return products
+      .map((product) => {
+        const stock = totalStock(product);
+        const reorder = Number(product.reorder) || 0;
+        const unitPrice = Number(product.price || 0);
+        const demand = salesOrders
+          .filter((order) => order.productName === product.name)
+          .reduce((sum, order) => sum + Number(order.qty || 0), 0);
+        const leadTime = suppliers.length
+          ? Math.round(suppliers.reduce((sum, supplier) => sum + Number(supplier.leadTime || 0), 0) / suppliers.length)
+          : 7;
+        const gap = Math.max(reorder - stock, 0);
+        const demandBuffer = Math.max(Math.ceil(demand * 0.6), Math.ceil(reorder * 0.4));
+        const recommendedQty = Math.max(gap + demandBuffer, reorder + 5);
+        const supplier = suppliers.find((entry) => entry.category === product.category) || suppliers[0];
+
+        let priority = 'Medium';
+        if (stock <= reorder) priority = 'High';
+        if (stock === 0) priority = 'Critical';
+        if (stock > reorder * 2) priority = 'Low';
+
+        return {
+          ...product,
+          stock,
+          reorder,
+          demand,
+          leadTime,
+          recommendedQty,
+          estimatedCost: recommendedQty * unitPrice,
+          supplierName: supplier?.name || 'No supplier',
+          priority,
+        };
+      })
+      .filter((item) => item.stock <= item.reorder * 1.25 || item.demand > 0)
+      .sort((a, b) => {
+        const priorityOrder = { Critical: 0, High: 1, Medium: 2, Low: 3 };
+        return priorityOrder[a.priority] - priorityOrder[b.priority] || b.demand - a.demand;
+      })
+      .slice(0, 5);
+  }, [products, salesOrders, suppliers]);
+  const supplierSlaSummary = React.useMemo(() => {
+    return suppliers.map((supplier) => {
+      const activePOrders = purchaseOrders.filter((order) => order.supplierName === supplier.name);
+      const openOrders = activePOrders.filter((order) => order.status !== 'Received').length;
+      const lateShipments = shipments.filter((shipment) => shipment.status === 'Delayed' && activePOrders.some((order) => order.id === shipment.orderId)).length;
+      const completedReceipts = activePOrders.filter((order) => order.status === 'Received').length;
+      const onTimeRate = supplier.onTimeRate || Math.max(80, 100 - Math.max(0, supplier.leadTime - 5) * 3 - lateShipments * 12);
+      let riskLevel = 'Healthy';
+      if (supplier.leadTime > 14 || lateShipments > 0 || openOrders > 2) riskLevel = 'Watch';
+      if (supplier.leadTime > 21 || lateShipments > 1 || openOrders > 4) riskLevel = 'Critical';
+
+      return {
+        ...supplier,
+        activePOrders,
+        openOrders,
+        lateShipments,
+        completedReceipts,
+        onTimeRate: Math.min(100, Math.max(0, onTimeRate)),
+        riskLevel,
+      };
+    }).sort((a, b) => {
+      const riskRank = { Critical: 0, Watch: 1, Healthy: 2 };
+      return riskRank[a.riskLevel] - riskRank[b.riskLevel] || b.onTimeRate - a.onTimeRate;
+    });
+  }, [suppliers, purchaseOrders, shipments]);
+  const fulfillmentRisk = React.useMemo(() => {
+    return shipments
+      .map((shipment) => {
+        const order = salesOrders.find((entry) => entry.id === shipment.orderId);
+        const product = products.find((entry) => entry.id === shipment.productId);
+        const stockNow = product ? Number(product.stock?.[shipment.location] || 0) : 0;
+        const onTimeRisk = shipment.status === 'Delayed' ? 'Critical' : shipment.status === 'In Transit' ? 'Watch' : 'Healthy';
+        const minutesToDispatch = shipment.status === 'Ready' ? 4 : shipment.status === 'In Transit' ? 12 : 0;
+        return {
+          ...shipment,
+          order,
+          product,
+          stockNow,
+          onTimeRisk,
+          minutesToDispatch,
+          dispatchHealth: shipment.status === 'Ready' && stockNow >= Number(shipment.qty || 0) ? 'Ready' : shipment.status === 'In Transit' ? 'In transit' : shipment.status === 'Delayed' ? 'Delayed' : 'Check',
+        };
+      })
+      .sort((a, b) => {
+        const riskOrder = { Critical: 0, Watch: 1, Healthy: 2 };
+        return riskOrder[a.onTimeRisk] - riskOrder[b.onTimeRisk] || new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
+      });
+  }, [shipments, salesOrders, products]);
+  const marginSignals = React.useMemo(() => {
+    return products
+      .map((product) => {
+        const sellPrice = Number(product.price || 0);
+        const unitCost = Math.max(0, sellPrice * 0.45);
+        const marginPercent = sellPrice > 0 ? ((sellPrice - unitCost) / sellPrice) * 100 : 0;
+        const unitsOnHand = totalStock(product);
+        const unitsSold = salesOrders
+          .filter((order) => order.productName === product.name)
+          .reduce((sum, order) => sum + Number(order.qty || 0), 0);
+        const potentialGross = unitsSold * sellPrice;
+
+        let health = 'Healthy';
+        if (marginPercent < 25 || unitsOnHand === 0) health = 'Watch';
+        if (marginPercent < 15 || unitsOnHand === 0 && unitsSold > 0) health = 'Critical';
+
+        return {
+          ...product,
+          sellPrice,
+          unitCost,
+          marginPercent,
+          unitsOnHand,
+          unitsSold,
+          potentialGross,
+          health,
+        };
+      })
+      .sort((a, b) => {
+        const healthOrder = { Critical: 0, Watch: 1, Healthy: 2 };
+        return healthOrder[a.health] - healthOrder[b.health] || b.marginPercent - a.marginPercent;
+      })
+      .slice(0, 6);
+  }, [products, salesOrders]);
+  const attentionItems = lowStockProducts.length > 0 ? lowStockProducts.slice(0, 3) : products.slice(0, 3);
+  const todayPriorityText = products.length === 0
+    ? 'Your workspace is ready. Add your first item to start tracking inventory.'
+    : lowStockProducts.length
+      ? `${lowStockProducts.length} item${lowStockProducts.length === 1 ? '' : 's'} need attention before the next stock review.`
+      : 'Everything in your catalog is within the current stock threshold.';
+
+  const navItems = [
+    { heading: 'Workspace', items: [['Today', '⌂'], ['Dashboard', '▦'], ['Products', '◫'], ['Operations', '⇄'], ['Warehouses', '⌂'], ['Suppliers', '◎'], ['Procurement', '⇣'], ['Customers', '◍'], ['Sales', '↗'], ['Fulfillment', '✦'], ['Returns', '↺'], ['Approvals', '✓'], ['Reports', '▥'], ['Billing', '$'], ['Access', '🔐'], ['Audit', '◔'], ['Forecasting', '◢'], ['Exceptions', '⚑']] },
+    { heading: 'Management', items: [['Settings', '⚙']] },
+  ];
+
+  const visibleNavItems = navItems.map((group) => ({
+    ...group,
+    items: group.items.filter(([label]) => canAccessPage(label)),
+  }));
+
+  const commandPaletteItems = [
+    { label: 'Open dashboard', page: 'Dashboard', icon: '▦' },
+    { label: 'View today command center', page: 'Today', icon: '⌂' },
+    { label: 'Add product', action: () => openProductModal(), icon: '＋' },
+    { label: 'Add customer', action: () => { setCustomerForm({ name: '', email: '', phone: '', tier: 'Standard', region: 'North' }); setModal('customer'); }, icon: '◍' },
+    { label: 'New sales order', action: () => { setSalesForm({ customerId: customers[0]?.id || '', productId: products[0]?.id || '', qty: '1', unitPrice: '0', status: 'Draft', location: warehouseList[0] || '', expectedDate: '' }); setModal('sales'); }, icon: '↗' },
+    { label: 'Create shipment', action: () => { setShipmentForm({ orderId: salesOrders[0]?.id || '', carrier: 'UPS', tracking: '', status: 'Ready', location: warehouseList[0] || '' }); setModal('shipment'); }, icon: '✦' },
+    { label: 'Record payment', action: () => { setPaymentForm({ invoiceId: invoices[0]?.id || '', customer: invoices[0]?.party || '', amount: String(invoices[0]?.amount || '0'), method: 'Bank transfer', date: new Date().toISOString().slice(0, 10) }); setModal('payment'); }, icon: '$' },
+    { label: 'Process return', action: () => { setReturnForm({ orderId: salesOrders[0]?.id || '', customerId: customers[0]?.id || '', productId: products[0]?.id || '', qty: '1', reason: 'Damaged', location: warehouseList[0] || '' }); setModal('return'); }, icon: '↺' },
+    { label: 'Review approvals', page: 'Approvals', icon: '✓' },
+    { label: 'Access control', page: 'Access', icon: '🔐' },
+    { label: 'Open audit trail', page: 'Audit', icon: '◔' },
+    { label: 'View forecasting', page: 'Forecasting', icon: '◢' },
+    { label: 'Open action center', page: 'Exceptions', icon: '⚑' },
+    { label: 'New receipt', action: () => openOperation('Receipt'), icon: '↓' },
+    { label: 'New transfer', action: () => openOperation('Internal'), icon: '⇄' },
+    { label: 'Add warehouse', action: () => { setWarehouseForm({ name: '' }); setModal('warehouse'); }, icon: '⌂' },
+    { label: 'Import inventory', action: () => { setImportPreview([]); setImportMessage(''); setModal('import'); }, icon: '↥' },
+    { label: 'Open billing', page: 'Billing', icon: '$' },
+    { label: 'Open reports', page: 'Reports', icon: '▥' },
+    { label: 'Workspace settings', page: 'Settings', icon: '⚙' },
+  ];
+
+  const globalSearchResults = React.useMemo(() => {
+    const query = globalSearch.trim().toLowerCase();
+    if (!query) {
+      return {
+        products: [],
+        customers: [],
+        warehouses: [],
+        operations: [],
+        salesOrders: [],
+        shipments: [],
+        returns: [],
+        invoices: [],
+        payments: [],
+        approvals: [],
+      };
+    }
+
+    return {
+      products: products.filter((product) => `${product.name} ${product.sku} ${product.category} ${product.material || ''}`.toLowerCase().includes(query)).slice(0, 4),
+      customers: customers.filter((customer) => `${customer.name} ${customer.email || ''} ${customer.phone || ''} ${customer.region}`.toLowerCase().includes(query)).slice(0, 4),
+      warehouses: warehouseList.filter((location) => location.toLowerCase().includes(query)).slice(0, 3),
+      operations: docs.filter((doc) => `${doc.id} ${doc.product} ${doc.partner || ''} ${doc.location || ''}`.toLowerCase().includes(query)).slice(0, 4),
+      salesOrders: salesOrders.filter((order) => `${order.id} ${order.customerName} ${order.productName} ${order.location}`.toLowerCase().includes(query)).slice(0, 4),
+      shipments: shipments.filter((item) => `${item.id} ${item.customerName} ${item.productName} ${item.carrier} ${item.tracking}`.toLowerCase().includes(query)).slice(0, 4),
+      payments: payments.filter((item) => `${item.id} ${item.customer} ${item.invoiceId} ${item.method}`.toLowerCase().includes(query)).slice(0, 4),
+      returns: returns.filter((item) => `${item.id} ${item.customerName} ${item.productName} ${item.reason}`.toLowerCase().includes(query)).slice(0, 4),
+      invoices: invoices.filter((invoice) => `${invoice.id} ${invoice.party} ${invoice.kind}`.toLowerCase().includes(query)).slice(0, 4),
+      approvals: approvalQueue.filter((item) => `${item.id} ${item.type} ${item.subject} ${item.reference}`.toLowerCase().includes(query)).slice(0, 4),
+    };
+  }, [globalSearch, products, customers, warehouseList, docs, salesOrders, shipments, payments, returns, invoices, approvalQueue]);
+
+  const handleGlobalSearchSelect = (category, item) => {
+    setCommandPaletteOpen(false);
+    setNotificationOpen(false);
+    setGlobalSearch('');
+
+    if (category === 'product') {
+      setPage('Products');
+      setSearch(item.name);
+      return;
+    }
+    if (category === 'customer') {
+      setPage('Customers');
+      setSearch(item.name);
+      return;
+    }
+    if (category === 'warehouse') {
+      setPage('Warehouses');
+      setSearch(item);
+      return;
+    }
+    if (category === 'operation') {
+      setPage('Operations');
+      setSearch(item.id);
+      return;
+    }
+    if (category === 'salesOrder') {
+      setPage('Sales');
+      setSearch(item.id);
+      return;
+    }
+    if (category === 'shipment') {
+      setPage('Fulfillment');
+      setSearch(item.id);
+      return;
+    }
+    if (category === 'shipment') {
+      setPage('Fulfillment');
+      setSearch(item.id);
+      return;
+    }
+    if (category === 'payment') {
+      setPage('Billing');
+      setSearch(item.invoiceId);
+      return;
+    }
+    if (category === 'return') {
+      setPage('Returns');
+      setSearch(item.id);
+      return;
+    }
+    if (category === 'invoice') {
+      setPage('Billing');
+      setSearch(item.id);
+      return;
+    }
+    if (category === 'approval') {
+      setPage('Approvals');
+      setSearch(item.reference);
+    }
+  };
+
+  const approveQueueItem = (item) => {
+    if (item.type === 'Sales order') {
+      setSalesOrders((current) => current.map((order) => (order.id === item.reference ? { ...order, status: 'Confirmed' } : order)));
+      showToast('Sales order approved and moved to confirmed status.');
+      return;
+    }
+    if (item.type === 'Purchase order') {
+      setPurchaseOrders((current) => current.map((order) => (order.id === item.reference ? { ...order, status: 'Approved' } : order)));
+      showToast('Purchase order approved.');
+      return;
+    }
+    if (item.type === 'Return') {
+      setReturns((current) => current.map((entry) => (entry.id === item.reference ? { ...entry, status: 'Approved' } : entry)));
+      showToast('Return approved and moved to the approved queue.');
+    }
+  };
+
+  const rejectQueueItem = (item) => {
+    if (item.type === 'Sales order') {
+      setSalesOrders((current) => current.map((order) => (order.id === item.reference ? { ...order, status: 'Draft' } : order)));
+      showToast('Sales order returned to draft review.');
+      return;
+    }
+    if (item.type === 'Purchase order') {
+      setPurchaseOrders((current) => current.map((order) => (order.id === item.reference ? { ...order, status: 'Draft' } : order)));
+      showToast('Purchase order returned to draft review.');
+      return;
+    }
+    if (item.type === 'Return') {
+      setReturns((current) => current.map((entry) => (entry.id === item.reference ? { ...entry, status: 'Rejected' } : entry)));
+      showToast('Return was rejected and marked for follow-up.');
+    }
+  };
+
+  const saveSupplier = (event) => {
+    event.preventDefault();
+    const name = supplierForm.name.trim();
+    if (!name) {
+      showToast('Supplier name is required.');
+      return;
+    }
+    const supplier = {
+      id: Date.now(),
+      name,
+      contact: supplierForm.contact.trim(),
+      email: supplierForm.email.trim(),
+      phone: supplierForm.phone.trim(),
+      leadTime: Number(supplierForm.leadTime) || 5,
+      slaTarget: Number(supplierForm.slaTarget) || 98,
+      category: supplierForm.category,
+      rating: 'Good',
+      onTimeRate: 96,
+      riskLevel: 'Healthy',
+    };
+    setSuppliers((current) => [supplier, ...current]);
+    setSupplierForm({ name: '', contact: '', email: '', phone: '', leadTime: '5', slaTarget: '98', category: 'General' });
+    setModal('');
+    showToast('Supplier added.');
+  };
+
+  const savePurchaseOrder = (event) => {
+    event.preventDefault();
+    const product = products.find((entry) => String(entry.id) === String(purchaseForm.productId));
+    const supplier = suppliers.find((entry) => String(entry.id) === String(purchaseForm.supplierId));
+
+    if (!supplier || !product) {
+      showToast('Select a valid supplier and product.');
+      return;
+    }
+
+    const qty = Number(purchaseForm.qty) || 0;
+    const unitCost = Number(purchaseForm.unitCost) || 0;
+    if (qty <= 0 || unitCost < 0) {
+      showToast('Quantity and unit cost must be valid.');
+      return;
+    }
+
+    const order = {
+      id: `PO-${Date.now().toString().slice(-6)}`,
+      supplierId: supplier.id,
+      supplierName: supplier.name,
+      productId: product.id,
+      productName: product.name,
+      qty,
+      unitCost,
+      expectedDate: purchaseForm.expectedDate || 'Not scheduled',
+      status: purchaseForm.status || 'Draft',
+      location: purchaseForm.location || warehouseList[0],
+      createdAt: new Date().toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }),
+      total: qty * unitCost,
+    };
+
+    setPurchaseOrders((current) => [order, ...current]);
+    setPurchaseForm({ supplierId: '', productId: '', qty: '0', unitCost: '0', expectedDate: '', location: warehouseList[0], status: 'Draft' });
+    setModal('');
+    showToast('Purchase order created.');
+  };
+
+  const saveCustomer = (event) => {
+    event.preventDefault();
+    const name = customerForm.name.trim();
+    if (!name) {
+      showToast('Customer name is required.');
+      return;
+    }
+    const customer = {
+      id: Date.now(),
+      name,
+      email: customerForm.email.trim(),
+      phone: customerForm.phone.trim(),
+      tier: customerForm.tier,
+      region: customerForm.region,
+      orders: 0,
+    };
+    setCustomers((current) => [customer, ...current]);
+    setCustomerForm({ name: '', email: '', phone: '', tier: 'Standard', region: 'North' });
+    setModal('');
+    showToast('Customer added.');
+  };
+
+  const saveSalesOrder = (event) => {
+    event.preventDefault();
+    const customer = customers.find((entry) => String(entry.id) === String(salesForm.customerId));
+    const product = products.find((entry) => String(entry.id) === String(salesForm.productId));
+    if (!customer || !product) {
+      showToast('Select a valid customer and product.');
+      return;
+    }
+
+    const qty = Number(salesForm.qty) || 0;
+    const unitPrice = Number(salesForm.unitPrice) || 0;
+    if (qty <= 0 || unitPrice < 0) {
+      showToast('Quantity and unit price must be valid.');
+      return;
+    }
+
+    const location = salesForm.location || warehouseList[0] || 'Main Warehouse';
+    const available = Number(product.stock?.[location] || 0);
+    if ((salesForm.status === 'Shipped' || salesForm.status === 'Confirmed') && available < qty) {
+      showToast('Not enough stock available to fulfill this order.');
+      return;
+    }
+
+    const order = {
+      id: `SO-${Date.now().toString().slice(-6)}`,
+      customerId: customer.id,
+      customerName: customer.name,
+      productId: product.id,
+      productName: product.name,
+      qty,
+      unitPrice,
+      status: salesForm.status || 'Draft',
+      location,
+      expectedDate: salesForm.expectedDate || 'Not scheduled',
+      total: qty * unitPrice,
+      createdAt: new Date().toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }),
+    };
+
+    if (order.status === 'Shipped' || order.status === 'Confirmed') {
+      setProducts((current) => current.map((entry) => {
+        if (entry.id !== product.id) return entry;
+        const nextStock = { ...entry.stock };
+        nextStock[location] = (Number(nextStock[location]) || 0) - qty;
+        return { ...entry, stock: nextStock };
+      }));
+      setDocs((current) => [{
+        id: `OUT-${Date.now().toString().slice(-5)}`,
+        type: 'Delivery',
+        product: product.name,
+        qty,
+        location,
+        partner: customer.name,
+        status: 'Done',
+        actor: displayUser.name,
+        date: new Date().toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }),
+      }, ...current]);
+    }
+
+    setCustomers((current) => current.map((entry) => (entry.id === customer.id ? { ...entry, orders: (Number(entry.orders) || 0) + 1 } : entry)));
+    setSalesOrders((current) => [order, ...current]);
+    setSalesForm({ customerId: '', productId: '', qty: '1', unitPrice: '0', status: 'Draft', location: warehouseList[0], expectedDate: '' });
+    setModal('');
+    showToast('Sales order saved.');
+  };
+
+  const saveShipment = (event) => {
+    event.preventDefault();
+    const order = salesOrders.find((entry) => String(entry.id) === String(shipmentForm.orderId));
+    if (!order) {
+      showToast('Select a valid sales order for this shipment.');
+      return;
+    }
+
+    const qty = Number(order.qty) || 0;
+    if (qty <= 0) {
+      showToast('This order has no units to ship.');
+      return;
+    }
+
+    const product = products.find((entry) => String(entry.id) === String(order.productId));
+    if (!product) {
+      showToast('The order product no longer exists in the catalog.');
+      return;
+    }
+
+    const location = shipmentForm.location || warehouseList[0] || 'Main Warehouse';
+    const available = Number(product.stock?.[location] || 0);
+    if (available < qty) {
+      showToast('Not enough stock in this warehouse to create the shipment.');
+      return;
+    }
+
+    const shipment = {
+      id: `SH-${Date.now().toString().slice(-6)}`,
+      orderId: order.id,
+      customerId: order.customerId,
+      customerName: order.customerName,
+      productId: product.id,
+      productName: product.name,
+      qty,
+      carrier: shipmentForm.carrier || 'UPS',
+      tracking: shipmentForm.tracking || `TRACK-${Date.now().toString().slice(-7)}`,
+      status: shipmentForm.status || 'Ready',
+      location,
+      createdAt: new Date().toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }),
+    };
+
+    setShipments((current) => [shipment, ...current]);
+    setSalesOrders((current) => current.map((entry) => (entry.id === order.id ? { ...entry, status: 'Shipped' } : entry)));
+    setProducts((current) => current.map((entry) => {
+      if (entry.id !== product.id) return entry;
+      const nextStock = { ...entry.stock };
+      nextStock[location] = (Number(nextStock[location]) || 0) - qty;
+      return { ...entry, stock: nextStock };
+    }));
+    setDocs((current) => [{
+      id: `OUT-${Date.now().toString().slice(-5)}`,
+      type: 'Delivery',
+      product: product.name,
+      qty,
+      location,
+      partner: order.customerName,
+      status: 'Done',
+      actor: displayUser.name,
+      date: new Date().toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }),
+    }, ...current]);
+    setShipmentForm({ orderId: '', carrier: 'UPS', tracking: '', status: 'Ready', location: warehouseList[0] || 'Main Warehouse' });
+    setModal('');
+    showToast('Shipment created and order marked as shipped.');
+  };
+
+  const saveReturn = (event) => {
+    event.preventDefault();
+    const customer = customers.find((entry) => String(entry.id) === String(returnForm.customerId));
+    const salesOrder = salesOrders.find((entry) => String(entry.id) === String(returnForm.orderId));
+    const product = products.find((entry) => String(entry.id) === String(returnForm.productId || salesOrder?.productId));
+
+    if (!customer || !product) {
+      showToast('Select a valid customer and product before processing a return.');
+      return;
+    }
+
+    const qty = Number(returnForm.qty) || 0;
+    if (qty <= 0) {
+      showToast('Return quantity must be greater than zero.');
+      return;
+    }
+
+    const location = returnForm.location || warehouseList[0] || 'Main Warehouse';
+    const nextReturn = {
+      id: `RT-${Date.now().toString().slice(-6)}`,
+      orderId: salesOrder?.id || returnForm.orderId || '—',
+      customerId: customer.id,
+      customerName: customer.name,
+      productId: product.id,
+      productName: product.name,
+      qty,
+      reason: returnForm.reason || 'Damaged',
+      location,
+      status: 'Pending',
+      createdAt: new Date().toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }),
+    };
+
+    setProducts((current) => current.map((entry) => {
+      if (entry.id !== product.id) return entry;
+      const nextStock = { ...entry.stock };
+      nextStock[location] = (Number(nextStock[location]) || 0) + qty;
+      return { ...entry, stock: nextStock };
+    }));
+
+    setDocs((current) => [{
+      id: `ADJ-${Date.now().toString().slice(-5)}`,
+      type: 'Adjustment',
+      product: product.name,
+      qty,
+      location,
+      partner: customer.name,
+      status: 'Done',
+      actor: displayUser.name,
+      date: new Date().toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }),
+    }, ...current]);
+
+    setReturns((current) => [nextReturn, ...current]);
+    setReturnForm({ orderId: '', customerId: '', productId: '', qty: '1', reason: 'Damaged', location: warehouseList[0] || 'Main Warehouse' });
+    setModal('');
+    showToast('Inventory return recorded and stock restored.');
+  };
+
+  const receivePurchaseOrder = (order) => {
+    const product = products.find((entry) => entry.id === order.productId);
+    if (!product) {
+      showToast('Product no longer exists.');
+      return;
+    }
+
+    const nextLocation = order.location || warehouseList[0] || 'Main Warehouse';
+    const nextStock = { ...product.stock };
+    nextStock[nextLocation] = (Number(nextStock[nextLocation]) || 0) + Number(order.qty || 0);
+    setProducts((current) => current.map((entry) => (entry.id === product.id ? { ...entry, stock: nextStock, price: Number(order.unitCost) || Number(entry.price || 0) } : entry)));
+    setDocs((current) => [
+      {
+        id: `RCV-${Date.now().toString().slice(-5)}`,
+        type: 'Receipt',
+        product: product.name,
+        qty: Number(order.qty || 0),
+        location: nextLocation,
+        partner: order.supplierName,
+        status: 'Done',
+        actor: displayUser.name,
+        date: new Date().toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }),
+      },
+      ...current,
+    ]);
+    setPurchaseOrders((current) => current.map((entry) => (entry.id === order.id ? { ...entry, status: 'Received' } : entry)));
+    showToast('Purchase order received and stock updated.');
+  };
+
+  return (
+    <>
+      {!authenticated ? (
+        <div className={`auth-screen ${currentThemeClass}`}>
+          <div className={`auth-card auth-centered-card ${currentThemeClass}`}>
+            <div className="auth-topbar">
+              <div className="auth-brand-inline">
+                <span className="auth-mark" aria-hidden="true">S</span>
+                <span>Stockwise</span>
+              </div>
+              <div className="auth-top-actions">
+                <button type="button" className="icon-button theme-toggle-button" onClick={() => setThemeMode((current) => current === 'dark' ? 'light' : 'dark')} aria-label="Toggle theme">
+                  {themeMode === 'dark' ? '☀' : '☾'}
+                </button>
+                <div className="status-chip">{isOnline ? 'Online' : 'Offline'}</div>
+              </div>
+            </div>
+
+            <div className="auth-intro">
+              <div className="hero-badge">Inventory operating system</div>
+              <h2 className="auth-title">{authMode === 'register' ? 'Create your account' : 'Welcome back'}</h2>
+              <p className="auth-copy">{authMode === 'register' ? 'Set up your inventory workspace and start tracking stock in minutes.' : 'Sign in to manage inventory, operations, and warehouse performance.'}</p>
+            </div>
+
+            <Form onSubmit={handleLogin}>
+              {authMode === 'register' && (
+                <>
+                  <Form.Group className="auth-field">
+                    <Form.Label>Full name</Form.Label>
+                    <Form.Control value={loginForm.name} onChange={(event) => setLoginForm({ ...loginForm, name: event.target.value })} placeholder="Your name" />
+                  </Form.Group>
+                  <Form.Group className="auth-field">
+                    <Form.Label>Role</Form.Label>
+                    <Form.Select value={loginForm.role} onChange={(event) => setLoginForm({ ...loginForm, role: event.target.value })}>
+                      {roleOptions.map((role) => <option key={role} value={role}>{role}</option>)}
+                    </Form.Select>
+                  </Form.Group>
+                </>
+              )}
+              <Form.Group className="auth-field">
+                <Form.Label>Email address</Form.Label>
+                <Form.Control type="email" value={loginForm.email} onChange={(event) => setLoginForm({ ...loginForm, email: event.target.value })} placeholder="name@company.com" />
+              </Form.Group>
+              <Form.Group className="auth-field">
+                <div className="auth-field-head">
+                  <Form.Label>Password</Form.Label>
+                  {authMode === 'login' && <button type="button" className="inline-action">Forgot?</button>}
+                </div>
+                <Form.Control type="password" value={loginForm.password} onChange={(event) => setLoginForm({ ...loginForm, password: event.target.value })} placeholder={authMode === 'register' ? 'At least 8 characters' : 'Enter your password'} />
+              </Form.Group>
+              {authMode === 'register' && (
+                <Form.Group className="auth-field">
+                  <Form.Label>Confirm password</Form.Label>
+                  <Form.Control type="password" value={loginForm.confirmPassword} onChange={(event) => setLoginForm({ ...loginForm, confirmPassword: event.target.value })} placeholder="Repeat password" />
+                </Form.Group>
+              )}
+
+              {authMode === 'login' && (
+                <div className="auth-check-row">
+                  <Form.Check type="checkbox" label="Remember me" />
+                </div>
+              )}
+
+              {loginError && <div className="login-error" role="alert">{loginError}</div>}
+              <Button type="submit" className="auth-submit">{authMode === 'register' ? 'Create account' : 'Sign in'}</Button>
+            </Form>
+
+            <div className="auth-divider"><span>or</span></div>
+            <div className="auth-switch">
+              {authMode === 'register' ? 'Already have an account?' : 'Need an account?'}{' '}
+              <button type="button" className="text-link-button" onClick={() => { setAuthMode(authMode === 'register' ? 'login' : 'register'); setLoginError(''); setLoginForm((current) => ({ ...current, role: current.role || 'Operations Manager' })); }}>
+                {authMode === 'register' ? 'Log in' : 'Create account'}
+              </button>
+            </div>
+
+            {authMode === 'login' && (
+              <div className="demo-box">
+                <div className="demo-label">Demo access</div>
+                <div><strong>jordan.davis@northstar.co</strong></div>
+                <div>Password: <strong>StockSense2025!</strong></div>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className={`app-shell ${currentThemeClass}`}>
+          <style>{`
+            :root {
+              --canvas: #edf3f8;
+              --canvas-2: #f7fafc;
+              --panel: #ffffff;
+              --panel-2: #f3f7fa;
+              --line: rgba(97, 118, 146, 0.16);
+              --ink: #172b4d;
+              --muted: #63768d;
+              --navy: #eaf1fa;
+              --green: #1d8a68;
+              --green-soft: rgba(29, 138, 104, 0.12);
+              --orange: #d98712;
+              --orange-soft: rgba(217, 135, 18, 0.12);
+              --blue-soft: rgba(77, 105, 255, 0.12);
+              --purple-soft: rgba(122, 90, 255, 0.12);
+              --danger: #d95b5b;
+              --danger-soft: rgba(217, 91, 91, 0.12);
+              --shadow: 0 18px 32px rgba(15, 28, 42, 0.08);
+            }
+            .theme-dark {
+              --canvas: #0b121c;
+              --canvas-2: #0f1726;
+              --panel: #111c2d;
+              --panel-2: #17263b;
+              --line: rgba(144, 166, 191, 0.14);
+              --ink: #ecf4ff;
+              --muted: #8ea3ba;
+              --navy: #12253f;
+              --green: #46d0a1;
+              --green-soft: rgba(70, 208, 161, 0.18);
+              --orange: #ffbd67;
+              --orange-soft: rgba(255, 189, 103, 0.18);
+              --blue-soft: rgba(106, 158, 255, 0.16);
+              --purple-soft: rgba(146, 118, 255, 0.16);
+              --danger: #ff7d7d;
+              --danger-soft: rgba(255, 125, 125, 0.14);
+              --shadow: 0 18px 32px rgba(6, 12, 20, 0.34);
+            }
+            * { box-sizing: border-box; }
+            body { margin: 0; background: var(--canvas); color: var(--ink); font-family: Inter, 'Segoe UI', sans-serif; }
+            button, input, select { font: inherit; }
+            .app-shell { min-height: 100vh; display: flex; background: radial-gradient(circle at 80% 10%, rgba(70, 208, 161, 0.10), transparent 22%), radial-gradient(circle at 15% 22%, rgba(98, 118, 255, 0.10), transparent 30%), linear-gradient(180deg, var(--canvas) 0%, #0d1624 100%); }
+            .theme-light .app-shell { background: radial-gradient(circle at 80% 12%, rgba(58, 181, 142, 0.12), transparent 20%), radial-gradient(circle at 15% 18%, rgba(140, 168, 255, 0.10), transparent 25%), linear-gradient(180deg, #f4f8fb 0%, #edf4f8 100%); }
+            .theme-light .sidebar { background: linear-gradient(180deg, rgba(255,255,255,0.97) 0%, rgba(243,247,250,0.98) 100%); color: #1c2b3d; border-right: 1px solid rgba(118,145,175,0.16); box-shadow: inset -1px 0 0 rgba(255,255,255,0.65); }
+            .theme-light .stockwise-brand { color: #172b4d; }
+            .theme-light .workspace-switch { background: rgba(13,22,36,0.03); border-color: rgba(118,145,175,0.16); }
+            .theme-light .workspace-switch strong { color: #152a45; }
+            .theme-light .workspace-switch small { color: #617893; }
+            .theme-light .nav-label { color: #6f8099; }
+            .theme-light .side-link { color: #425769; }
+            .theme-light .side-link.active { background: linear-gradient(90deg, rgba(29,138,104,0.10), rgba(29,138,104,0.04)); border-color: rgba(29,138,104,0.18); color: #153f32; }
+            .theme-light .sidebar-user { color: #1f2f45; }
+            .theme-light .mini-avatar + div strong { color: #1d2d46; }
+            .theme-light .mini-avatar + div small { color: #677f9d; }
+            .theme-light .main { background: rgba(245,247,250,0.8); }
+            .theme-light .topbar { background: rgba(255,255,255,0.86); }
+            .theme-light .topbar .crumb, .theme-light .page-sub, .theme-light .eyebrow { color: #627892; }
+            .theme-light .topbar strong { color: #1a2d45; }
+            .theme-light .icon-button { color: #2f4d68; background: rgba(255,255,255,0.68); border-color: rgba(113,136,165,0.22); }
+            .theme-light .btn-outline-secondary { color: #2f4965; border-color: rgba(96,117,142,0.28); background: rgba(255,255,255,0.56); }
+            .theme-light .section-card, .theme-light .kpi-card, .theme-light .feature-card, .theme-light .warehouse-tile, .theme-light .action-card { background: linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(245,248,251,0.98) 100%); }
+            .theme-light .table thead th { background: rgba(18,28,42,0.02); color: #6a7f96; }
+            .theme-light .table tbody td { color: #182d48; }
+            .theme-light .auth-screen { background: linear-gradient(135deg, #f3efe8 0%, #f1f5fb 100%); }
+            .theme-light .auth-card { background: rgba(255,255,255,0.96); border-color: rgba(215,223,233,0.9); }
+            .theme-light .auth-topbar, .theme-light .auth-switch, .theme-light .demo-box { color: #5d7085; }
+            .theme-dark .auth-card { background: rgba(14,21,31,0.96); border-color: rgba(153,170,189,0.12); }
+            .theme-dark .auth-screen { background: linear-gradient(135deg, #0b121c 0%, #111b27 100%); }
+            .theme-dark .auth-title, .theme-dark .auth-copy, .theme-dark .auth-field label, .theme-dark .auth-brand-inline { color: #edf6ff; }
+            .theme-dark .auth-field .form-control { background: rgba(255,255,255,0.02); border-color: rgba(153,170,189,0.15); color: #edf6ff; }
+            .theme-dark .auth-check-row .form-check-label, .theme-dark .demo-box { color: #dfeaf8; }
+            .theme-dark .demo-box { background: rgba(255,255,255,0.02); border-color: rgba(153,170,189,0.14); }
+            .theme-dark .status-chip { background: rgba(70,208,161,0.12); }
+            .theme-dark .status-chip, .theme-dark .auth-brand-inline { color: #e8f7ff; }
+            .theme-dark .hero-badge { background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.1); color: #dfeaf8; }
+            .auth-top-actions { display: flex; align-items: center; gap: 10px; }
+            .theme-toggle-button { display: grid; place-items: center; font-size: 16px; }
+            .sidebar { width: 260px; flex: 0 0 260px; background: linear-gradient(180deg, rgba(10,16,26,0.97) 0%, rgba(17,28,45,0.98) 100%); color: #dfe9f7; min-height: 100vh; padding: 22px 15px 16px; display: flex; flex-direction: column; border-right: 1px solid var(--line); box-shadow: inset -1px 0 0 rgba(132, 160, 190, 0.12); }
+            .stockwise-brand { display: flex; align-items: center; gap: 12px; padding: 6px 8px 24px; color: #fff; font-size: 20px; font-weight: 800; }
+            .stockwise-brand-compact { justify-content: center; padding: 0 0 18px; font-size: 24px; }
+            .stockwise-mark { width: 38px; height: 38px; border-radius: 12px; background: linear-gradient(145deg, #3ad6a4, #0f8d70); display: grid; place-items: center; border: 1px solid rgba(255,255,255,0.15); box-shadow: 0 10px 18px rgba(22,133,106,0.22); }
+            .stockwise-mark svg { width: 28px; height: 28px; }
+            .workspace-switch { display: flex; align-items: center; gap: 10px; border-radius: 12px; background: rgba(255,255,255,0.04); border: 1px solid var(--line); padding: 10px 12px; margin: 0 4px 24px; }
+            .workspace-avatar { width: 30px; height: 30px; border-radius: 9px; background: linear-gradient(145deg, #dffdf1, #bfe8dc); display: grid; place-items: center; color: #146d5a; font-weight: 700; }
+            .workspace-switch strong { display: block; font-size: 12px; color: #fff; }
+            .workspace-switch small { display: block; color: #9fb0c9; font-size: 11px; }
+            .nav-section { margin-bottom: 24px; }
+            .nav-label { color: #7f90aa; text-transform: uppercase; letter-spacing: 1.1px; font-size: 10px; font-weight: 700; padding: 0 12px; margin: 0 0 8px; }
+            .side-link { width: 100%; display: flex; align-items: center; gap: 12px; border: 1px solid transparent; border-radius: 10px; background: transparent; color: #d3deed; padding: 10px 12px; margin: 2px 0; text-align: left; font-size: 13px; cursor: pointer; transition: background 0.18s ease, border-color 0.18s ease, transform 0.18s ease; }
+            .side-link:hover { background: rgba(255,255,255,0.04); transform: translateX(2px); }
+            .side-link.active { background: linear-gradient(90deg, rgba(70,208,161,0.19), rgba(70,208,161,0.08)); border-color: rgba(70,208,161,0.2); box-shadow: inset 3px 0 0 #52d7ae; color: #fff; }
+            .side-icon { width: 18px; text-align: center; display: inline-block; }
+            .sidebar-footer { margin-top: auto; border-top: 1px solid var(--line); padding-top: 14px; }
+            .sidebar-user { display: flex; align-items: center; gap: 10px; padding: 8px 6px 12px; color: #fff; }
+            .mini-avatar { width: 34px; height: 34px; border-radius: 50%; background: linear-gradient(145deg, #f5dfd3, #e9d0bb); display: grid; place-items: center; color: #7d4f38; font-weight: 700; font-size: 12px; }
+            .mini-avatar + div { min-width: 0; }
+            .mini-avatar + div strong { display: block; font-size: 12px; }
+            .mini-avatar + div small { color: #a4b5d0; font-size: 11px; }
+            .main { flex: 1; min-width: 0; background: rgba(11,18,28,0.8); }
+            .topbar { height: 70px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; background: rgba(10,18,31,0.8); backdrop-filter: blur(14px); padding: 0 28px; position: sticky; top: 0; z-index: 4; }
+            .crumb { color: #8998aa; font-size: 12px; }
+            .crumb strong { color: var(--ink); }
+            .top-actions { display: flex; align-items: center; gap: 14px; }
+            .icon-button { width: 36px; height: 36px; border-radius: 10px; border: 1px solid var(--line); background: rgba(255,255,255,0.04); color: #dfeaf8; position: relative; font-size: 18px; }
+            .notification-dot { position: absolute; width: 7px; height: 7px; border-radius: 50%; background: #ea6d5d; right: 7px; top: 6px; border: 2px solid #0d1624; }
+            .content { max-width: 1600px; padding: 30px 32px 56px; }
+            .page-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
+            .eyebrow { color: #8aa0bd; font-size: 10px; letter-spacing: 1.25px; font-weight: 700; text-transform: uppercase; }
+            .page-head { margin: 0; font-size: 27px; font-weight: 800; letter-spacing: -0.8px; color: var(--ink); }
+            .page-sub { color: var(--muted); margin-top: 6px; font-size: 13px; }
+            .live-pill { display: inline-flex; align-items: center; gap: 8px; margin-left: 9px; border-radius: 999px; padding: 5px 10px; background: rgba(70,208,161,0.12); border: 1px solid rgba(70,208,161,0.22); color: #7ce8c3; font-size: 9px; font-weight: 700; letter-spacing: 0.5px; }
+            .live-pill i { width: 6px; height: 6px; border-radius: 50%; background: #65efb4; display: inline-block; box-shadow: 0 0 0 0 rgba(101,239,180,0.45); animation: pulse 2.1s infinite; }
+            @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(101,239,180,0.45); } 70% { box-shadow: 0 0 0 8px rgba(101,239,180,0); } 100% { box-shadow: 0 0 0 0 rgba(101,239,180,0); } }
+            .btn { border-radius: 9px; padding: 9px 14px; font-weight: 600; font-size: 13px; }
+            .btn-success { background: linear-gradient(145deg, #1eb789, #0c775c); border-color: #15936d; }
+            .btn-success:hover { background: linear-gradient(145deg, #1ca781, #0b694f); border-color: #10886d; }
+            .btn-outline-secondary { border-color: rgba(143, 164, 191, 0.25); color: #dfeaf8; background: rgba(255,255,255,0.02); }
+            .kpi-card, .section-card, .warehouse-tile, .feature-card, .action-card { background: linear-gradient(180deg, rgba(18,28,42,0.98) 0%, rgba(13,20,30,0.98) 100%); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); position: relative; overflow: hidden; }
+            .kpi-card::before, .section-card::before, .feature-card::before, .warehouse-tile::before, .action-card::before { content: ''; position: absolute; inset: 0 0 auto 0; height: 1px; background: linear-gradient(90deg, transparent, rgba(154, 214, 255, 0.8), transparent); opacity: 0.7; }
+            .kpi-card .card-body { padding: 18px 18px 14px; }
+            .kpi-top { display: flex; align-items: center; justify-content: space-between; }
+            .kpi-label { color: #90a5c0; font-size: 11px; font-weight: 600; }
+            .kpi-icon { width: 38px; height: 38px; border-radius: 10px; display: grid; place-items: center; font-size: 18px; font-weight: 700; }
+            .icon-blue { background: rgba(124, 160, 255, 0.18); color: #9fc6ff; }
+            .icon-gold { background: rgba(255, 189, 103, 0.18); color: #ffbe66; }
+            .icon-green { background: rgba(70,208,161,0.18); color: #7ce8c3; }
+            .icon-purple { background: rgba(146,118,255,0.18); color: #b7a6ff; }
+            .kpi-value { font-size: 28px; font-weight: 800; letter-spacing: -0.9px; color: var(--ink); margin: 12px 0 4px; }
+            .kpi-foot { color: var(--muted); font-size: 11px; }
+            .inventory-alert { border: 1px solid rgba(255, 189, 103, 0.22); background: linear-gradient(135deg, rgba(255,189,103,0.12), rgba(15,22,34,0.8)); border-radius: 11px; padding: 12px 14px; color: #ffd79d; font-size: 13px; }
+            .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+            .action-card { min-height: 110px; display: flex; align-items: center; gap: 16px; padding: 18px 16px; cursor: pointer; transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease; }
+            .action-card:hover { transform: translateY(-2px); box-shadow: 0 16px 32px rgba(2, 7, 12, 0.38); border-color: rgba(70,208,161,0.25); }
+            .action-icon { width: 46px; height: 46px; border-radius: 12px; display: grid; place-items: center; font-size: 20px; font-weight: 700; }
+            .action-copy strong { display: block; font-size: 13px; color: var(--ink); }
+            .action-copy span { color: var(--muted); font-size: 11px; }
+            .section-card { overflow: hidden; }
+            .section-head { padding: 18px 20px 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid rgba(145, 164, 185, 0.10); }
+            .section-heading { margin: 0; font-size: 15px; font-weight: 700; color: var(--ink); }
+            .soft-count { color: var(--muted); font-size: 12px; }
+            .section-sub { margin-top: 4px; font-size: 11px; color: var(--muted); }
+            .toolbar-wrap { flex-wrap: wrap; justify-content: flex-end; }
+            .search-box { width: 250px; }
+            .filter-select { min-width: 145px; background: rgba(255,255,255,0.02); color: var(--ink); border-color: var(--line); }
+            .input-glyph { background: rgba(255,255,255,0.02); color: #9aaec4; border-color: var(--line); }
+            .table-responsive { width: 100%; overflow-x: auto; }
+            table { margin: 0; }
+            .table thead th { background: rgba(255,255,255,0.02); color: var(--muted); border-bottom: 1px solid var(--line); border-top: 0; font-size: 9px; letter-spacing: 0.8px; text-transform: uppercase; padding: 12px 18px; }
+            .table tbody td { color: var(--ink); padding: 14px 18px; font-size: 12px; vertical-align: middle; }
+            .product-name { font-weight: 700; color: var(--ink); }
+            .ref-code { color: var(--muted); }
+            .badge-soft { display: inline-flex; align-items: center; justify-content: center; padding: 6px 10px; border-radius: 999px; font-size: 9px; font-weight: 700; letter-spacing: 0.45px; }
+            .status-done { background: rgba(70,208,161,0.16); color: #7ce8c3; }
+            .status-waiting { background: rgba(255,189,103,0.18); color: #ffd79d; }
+            .status-ready { background: rgba(106,158,255,0.16); color: #a7c7ff; }
+            .status-scheduled { background: rgba(146,118,255,0.16); color: #d0c0ff; }
+            .status-canceled { background: rgba(255,125,125,0.14); color: #ffb0b0; }
+            .status-draft { background: rgba(143, 164, 191, 0.12); color: #dce7f6; }
+            .empty-state { padding: 36px 12px 26px; text-align: center; color: var(--muted); font-size: 13px; }
+            .today-grid { display: grid; grid-template-columns: 1.5fr 1fr; gap: 16px; }
+            .today-hero { background: linear-gradient(135deg, rgba(19, 51, 44, 0.85), rgba(14, 29, 44, 0.96)); border: 1px solid rgba(70,208,161,0.2); border-radius: 18px; padding: 26px 24px; box-shadow: 0 18px 30px rgba(5, 13, 22, 0.28); }
+            .today-hero h2 { margin: 0; font-size: 26px; font-weight: 800; color: #ecf8ff; letter-spacing: -0.8px; }
+            .today-hero p { margin: 8px 0 0; color: #a7bed8; }
+            .today-list { list-style: none; padding: 0; margin: 18px 0 0; }
+            .today-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid rgba(255,255,255,0.06); padding: 10px 0; font-size: 12px; color: #dfeaf8; }
+            .mini-tag { display: inline-flex; align-items: center; justify-content: center; min-width: 28px; height: 28px; padding: 0 8px; border-radius: 8px; font-size: 11px; font-weight: 700; }
+            .mini-tag.green { background: rgba(70,208,161,0.18); color: #7ce8c3; }
+            .mini-tag.orange { background: rgba(255,189,103,0.18); color: #ffbe66; }
+            .mini-tag.blue { background: rgba(124,160,255,0.18); color: #9fc6ff; }
+            .mini-tag.purple { background: rgba(146,118,255,0.18); color: #cebfff; }
+            .feature-card, .warehouse-tile { padding: 18px 18px 14px; }
+            .feature-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+            .feature-card h4, .warehouse-card h4 { margin: 0; font-size: 14px; color: var(--ink); }
+            .feature-list { list-style: none; padding: 0; margin: 0; }
+            .feature-list li { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.06); font-size: 12px; color: var(--ink); }
+            .feature-list li:last-child { border-bottom: 0; }
+            .link-button, .text-link-button { background: transparent; border: 0; color: #6ce0b2; font-weight: 700; padding: 0; }
+            .warehouse-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+            .warehouse-card h4 { margin-bottom: 7px; }
+            .warehouse-card .value { font-size: 21px; font-weight: 800; color: var(--ink); }
+            .warehouse-card .small { font-size: 11px; color: var(--muted); }
+            .search-overlay { position: fixed; inset: 0; background: rgba(5,12,18,0.4); z-index: 30; display: flex; align-items: flex-start; justify-content: center; padding-top: 64px; }
+            .search-panel { width: min(760px, calc(100% - 24px)); background: rgba(14,21,31,0.96); border: 1px solid rgba(150,170,195,0.16); border-radius: 18px; box-shadow: 0 28px 60px rgba(4, 11, 17, 0.42); overflow: hidden; }
+            .search-panel-header { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid rgba(150,170,195,0.12); }
+            .search-panel-header .search-box { width: 100%; }
+            .search-panel-header .search-box .form-control { background: rgba(255,255,255,0.03); color: var(--ink); border: 1px solid rgba(150,170,195,0.16); }
+            .search-result-group { padding: 12px 16px 8px; }
+            .search-group-label { font-size: 10px; letter-spacing: 1.1px; text-transform: uppercase; color: #91a4bf; margin: 0 0 8px; }
+            .search-result-item { width: 100%; border: 1px solid rgba(150,170,195,0.08); border-radius: 10px; background: rgba(255,255,255,0.02); color: var(--ink); padding: 10px 12px; display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; text-align: left; }
+            .search-result-item strong { display: block; font-size: 13px; }
+            .search-result-item small { color: var(--muted); font-size: 11px; }
+            .search-result-item:hover { background: rgba(70,208,161,0.07); border-color: rgba(70,208,161,0.18); }
+            .search-panel-footer { padding: 12px 16px 16px; border-top: 1px solid rgba(150,170,195,0.12); display: flex; justify-content: space-between; align-items: center; gap: 12px; color: #96aac2; font-size: 11px; }
+            .search-panel-footer .kbd { border: 1px solid rgba(150,170,195,0.16); background: rgba(255,255,255,0.03); border-radius: 6px; padding: 3px 7px; font-size: 10px; }
+            .notification-panel { position: absolute; right: 24px; top: 72px; width: min(360px, calc(100vw - 24px)); background: rgba(14,21,31,0.96); border: 1px solid rgba(150,170,195,0.16); border-radius: 18px; box-shadow: 0 24px 50px rgba(5,12,20,0.44); z-index: 25; padding: 14px 14px 8px; }
+            .notification-panel h4 { margin: 0 0 8px; font-size: 13px; color: var(--ink); }
+            .notification-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 10px; border-radius: 10px; border: 1px solid rgba(150,170,195,0.08); background: rgba(255,255,255,0.02); margin-bottom: 8px; }
+            .notification-item strong { display: block; font-size: 12px; }
+            .notification-item small { display: block; color: var(--muted); font-size: 11px; }
+            .notification-badge { display: inline-flex; min-width: 24px; justify-content: center; padding: 6px 7px; border-radius: 999px; background: rgba(255,189,103,0.18); color: #ffd79d; font-size: 10px; font-weight: 700; }
+            .auth-screen { min-height: 100vh; display: grid; place-items: center; background: linear-gradient(135deg, #f7f3ee 0%, #f1f6fb 100%); padding: 24px; }
+            .auth-card { width: min(100%, 430px); background: rgba(255,255,255,0.96); border: 1px solid rgba(215, 223, 233, 0.9); border-radius: 24px; box-shadow: 0 20px 40px rgba(17, 24, 39, 0.08); padding: 24px 22px 20px; }
+            .auth-centered-card { margin: 0 auto; }
+            .auth-topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+            .auth-brand-inline { display: inline-flex; align-items: center; gap: 10px; color: #1b2e47; font-weight: 800; font-size: 16px; }
+            .auth-mark { width: 30px; height: 30px; display: inline-grid; place-items: center; border-radius: 10px; background: linear-gradient(135deg, #0d7d63, #25b087); color: #fff; font-size: 13px; font-weight: 800; }
+            .hero-badge { display: inline-flex; align-items: center; width: fit-content; border-radius: 999px; background: rgba(32, 118, 96, 0.08); border: 1px solid rgba(32, 118, 96, 0.1); color: #1f6d59; font-size: 10px; letter-spacing: 1.2px; text-transform: uppercase; padding: 7px 10px; font-weight: 700; }
+            .auth-intro { margin-bottom: 18px; }
+            .auth-title { margin: 14px 0 8px; color: #172b4d; font-size: 30px; font-weight: 800; letter-spacing: -0.8px; }
+            .auth-copy { color: #697d92; margin: 0; font-size: 14px; line-height: 1.6; }
+            .status-chip { display: inline-flex; padding: 7px 10px; border-radius: 999px; background: rgba(22,133,106,0.08); border: 1px solid rgba(22,133,106,0.14); color: #178a6d; font-size: 10px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; }
+            .auth-field { margin-bottom: 16px; }
+            .auth-field-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+            .auth-field label { font-size: 12px; font-weight: 700; color: #425a74; margin: 0; }
+            .auth-field .form-control { border-radius: 12px; border: 1px solid #dfe7f0; background: #f9fbfd; padding: 11px 12px; font-size: 14px; color: #192d45; }
+            .auth-field .form-control:focus { border-color: rgba(31,149,118,0.5); box-shadow: 0 0 0 0.25rem rgba(31,149,118,0.10); }
+            .auth-check-row { margin: -2px 0 14px; }
+            .auth-check-row .form-check-input { width: 15px; height: 15px; border-color: #d6deea; }
+            .auth-check-row .form-check-label { font-size: 12px; color: #5b7189; }
+            .auth-submit { width: 100%; margin-top: 6px; border-radius: 12px; padding: 12px 14px; font-size: 14px; font-weight: 700; background: linear-gradient(135deg, #1f8e73, #0f6a56); border: none; }
+            .auth-submit:hover { background: linear-gradient(135deg, #1a7f67, #0e5d4a); }
+            .inline-action { background: transparent; border: 0; color: #1a7a62; font-weight: 700; font-size: 11px; padding: 0; }
+            .login-error { background: #fff1f1; border: 1px solid rgba(213,87,87,0.15); color: #c85454; padding: 9px 12px; border-radius: 9px; font-size: 12px; margin-bottom: 12px; }
+            .auth-divider { display: flex; align-items: center; gap: 12px; margin: 18px 0 14px; color: #8ea1b5; font-size: 11px; text-transform: uppercase; letter-spacing: 0.9px; }
+            .auth-divider::before, .auth-divider::after { content: ''; height: 1px; background: #e9edf3; flex: 1; }
+            .auth-switch { text-align: center; font-size: 12px; color: #657890; }
+            .text-link-button { color: #146d5a; font-weight: 700; }
+            .demo-box { margin-top: 18px; background: linear-gradient(180deg, #f9fbfd 0%, #f3f7fa 100%); border: 1px solid #e4ecf4; border-radius: 12px; padding: 12px 14px; color: #586f8d; font-size: 12px; line-height: 1.7; }
+            .demo-label { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: #7d8fa5; margin-bottom: 4px; }
+            .toast-message { position: fixed; right: 24px; bottom: 24px; z-index: 1000; background: rgba(17,31,56,0.92); color: #fff; border-radius: 12px; padding: 12px 14px; font-size: 12px; box-shadow: 0 14px 30px rgba(17,31,56,0.18); }
+            .modal .form-label { font-weight: 700; font-size: 12px; color: #405a75; }
+            .modal-body .form-text { font-size: 11px; }
+            @media (max-width: 1100px) { .today-grid { grid-template-columns: 1fr; } .warehouse-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+            @media (max-width: 900px) { .sidebar { width: 220px; flex-basis: 220px; } .content { padding: 26px 20px 48px; } .search-box { width: 200px; } .grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+            @media (max-width: 700px) { .sidebar { width: 72px; flex-basis: 72px; padding: 18px 8px; } .stockwise-wordmark, .workspace-switch > div:last-child, .nav-label, .mini-avatar + div, .sidebar-user > div:last-child { display: none; } .workspace-switch { justify-content: center; padding: 10px 0; } .side-link { justify-content: center; padding: 10px 4px; } .side-link span:last-child { display: none; } .topbar { padding: 0 14px; } .content { padding: 20px 14px 32px; } .grid-3, .warehouse-grid { grid-template-columns: 1fr; } .page-row { flex-direction: column; } .toolbar-wrap { justify-content: flex-start; } .search-box { width: 100%; } }
+          `}</style>
+
+          <aside className="sidebar">
+            <BrandLogo />
+            <div className="workspace-switch">
+              <div className="workspace-avatar">N</div>
+              <div>
+                <strong>Northstar Supply</strong>
+                <small>Operations workspace</small>
+              </div>
+            </div>
+            {visibleNavItems.map((group) => (
+              <div key={group.heading} className="nav-section">
+                <div className="nav-label">{group.heading}</div>
+                {group.items.map(([label, icon]) => (
+                  <button key={label} type="button" className={`side-link ${page === label ? 'active' : ''}`} onClick={() => setPage(label)}>
+                    <span className="side-icon">{icon}</span>
+                    <span>{label}</span>
+                  </button>
+                ))}
+              </div>
+            ))}
+
+            <div className="sidebar-footer">
+              <div className="sidebar-user">
+                <div className="mini-avatar">{userInitials}</div>
+                <div>
+                  <strong>{displayUser.name}</strong>
+                  <small>{displayUser.email}</small>
+                </div>
+              </div>
+              <button type="button" className="side-link" onClick={logout}>
+                <span className="side-icon">↪</span>
+                <span>Sign out</span>
+              </button>
+            </div>
+          </aside>
+
+          <main className="main">
+            <header className="topbar">
+              <div className="crumb">Workspace <span style={{ margin: '0 8px', color: '#c0cbd8' }}>/</span> <strong>{page}</strong></div>
+              <div className="top-actions">
+                <div className="search-box" style={{ width: 320 }}>
+                  <InputGroup>
+                    <InputGroup.Text className="input-glyph">⌕</InputGroup.Text>
+                    <Form.Control value={globalSearch} onChange={(event) => setGlobalSearch(event.target.value)} placeholder="Search products, customers, orders, warehouses..." />
+                  </InputGroup>
+                </div>
+                <button type="button" className="icon-button theme-toggle-button" onClick={() => setThemeMode((current) => current === 'dark' ? 'light' : 'dark')} aria-label="Toggle theme">
+                  {themeMode === 'dark' ? '☀' : '☾'}
+                </button>
+                <button type="button" className="icon-button" aria-label="Open command palette" onClick={() => setCommandPaletteOpen(true)}>
+                  ⌘K
+                </button>
+                <button type="button" className="icon-button" aria-label="Notifications" onClick={() => setNotificationOpen((current) => !current)}>
+                  ♡
+                  <span className="notification-dot" />
+                </button>
+                <div className="mini-avatar">{userInitials}</div>
+              </div>
+            </header>
+
+            {commandPaletteOpen && (
+              <div className="search-overlay" onClick={() => setCommandPaletteOpen(false)}>
+                <div className="search-panel" onClick={(event) => event.stopPropagation()}>
+                  <div className="search-panel-header">
+                    <div className="search-box">
+                      <InputGroup>
+                        <InputGroup.Text className="input-glyph">⌕</InputGroup.Text>
+                        <Form.Control autoFocus value={globalSearch} onChange={(event) => setGlobalSearch(event.target.value)} placeholder="Search Stockwise..." />
+                      </InputGroup>
+                    </div>
+                  </div>
+
+                  {globalSearch.trim() ? (
+                    <>
+                      {Object.entries(globalSearchResults).some(([, items]) => items.length > 0) ? (
+                        <>
+                          {Object.entries(globalSearchResults).map(([groupName, items]) => {
+                            if (!items.length) return null;
+                            const label = groupName === 'products' ? 'Products' : groupName === 'customers' ? 'Customers' : groupName === 'warehouses' ? 'Warehouses' : groupName === 'operations' ? 'Operations' : groupName === 'salesOrders' ? 'Sales orders' : 'Invoices';
+                            return (
+                              <div key={groupName} className="search-result-group">
+                                <div className="search-group-label">{label}</div>
+                                {items.map((item) => {
+                                  const itemKey = groupName === 'products' ? `${item.id}-product` : groupName === 'customers' ? `${item.id}-customer` : groupName === 'warehouses' ? `${item}-warehouse` : groupName === 'operations' ? `${item.id}-op` : groupName === 'salesOrders' ? `${item.id}-sale` : groupName === 'approvals' ? `${item.id}-approval` : `${item.id}-invoice`;
+                                  const title = groupName === 'products' ? item.name : groupName === 'customers' ? item.name : groupName === 'warehouses' ? item : groupName === 'operations' ? `${item.type} · ${item.product}` : groupName === 'salesOrders' ? `${item.id} · ${item.customerName}` : groupName === 'approvals' ? `${item.type} · ${item.subject}` : `${item.kind} · ${item.party}`;
+                                  const subtitle = groupName === 'products' ? `${item.sku} · ${item.category}` : groupName === 'customers' ? `${item.email || 'No email'} · ${item.region}` : groupName === 'warehouses' ? 'Location' : groupName === 'operations' ? `${item.id} · ${item.location}` : groupName === 'salesOrders' ? `${item.productName} · ${item.status}` : groupName === 'approvals' ? `${item.reference} · ${item.status}` : `${item.id} · ${item.status}`;
+                                  const category = groupName === 'customers' ? 'customer' : groupName === 'salesOrders' ? 'salesOrder' : groupName === 'products' ? 'product' : groupName === 'warehouses' ? 'warehouse' : groupName === 'operations' ? 'operation' : groupName === 'approvals' ? 'approval' : 'invoice';
+                                  return (
+                                    <button key={itemKey} type="button" className="search-result-item" onClick={() => handleGlobalSearchSelect(category, item)}>
+                                      <div>
+                                        <strong>{title}</strong>
+                                        <small>{subtitle}</small>
+                                      </div>
+                                      <span className="mini-tag blue">↵</span>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            );
+                          })}
+                        </>
+                      ) : (
+                        <div className="search-result-group">
+                          <div className="search-group-label">No results</div>
+                          <div className="empty-state" style={{ paddingTop: 10 }}>No matching products, customers, orders, or warehouses for “{globalSearch}”. Try a SKU, customer name, or product category.</div>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <div className="search-result-group">
+                        <div className="search-group-label">Actions</div>
+                        {commandPaletteItems.map((item) => (
+                          <button key={item.label} type="button" className="search-result-item" onClick={() => {
+                            if (item.page) setPage(item.page);
+                            if (item.action) item.action();
+                            setCommandPaletteOpen(false);
+                            setGlobalSearch('');
+                          }}>
+                            <div>
+                              <strong>{item.label}</strong>
+                              <small>{item.page ? 'Navigate' : 'Quick action'}</small>
+                            </div>
+                            <span className="mini-tag purple">{item.icon}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+
+                  <div className="search-panel-footer">
+                    <span>Search across products, warehouses, movement records, and billing.</span>
+                    <span><span className="kbd">Esc</span> to close</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {notificationOpen && (
+              <div className="notification-panel">
+                <h4>Alerts</h4>
+                {lowStockProducts.length > 0 ? (
+                  lowStockProducts.slice(0, 3).map((product) => (
+                    <div className="notification-item" key={product.id}>
+                      <div>
+                        <strong>{product.name}</strong>
+                        <small>{totalStock(product)} {product.unit} remaining</small>
+                      </div>
+                      <span className="notification-badge">{totalStock(product) <= Number(product.reorder || 0) ? 'Low' : 'Risk'}</span>
+                    </div>
+                  ))
+                ) : (
+                  <div className="notification-item">
+                    <div>
+                      <strong>Inventory stable</strong>
+                      <small>No stock alerts require action.</small>
+                    </div>
+                    <span className="notification-badge">OK</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {!isOnline && (
+              <div style={{ background: '#fff4e6', color: '#815c2b', padding: '10px 18px', borderBottom: '1px solid #f0debc', fontSize: 12 }}>
+                <strong>Offline mode</strong> · Your browser is offline. Local changes are kept until sync is available.
+              </div>
+            )}
+
+            <div className="content">
+              {page === 'Today' && (
+                <>
+                  <div className="page-row">
+                    <div>
+                      <div className="eyebrow">Operations center <span className="live-pill"><i />Workspace active</span></div>
+                      <h1 className="page-head">Good morning, {displayUser.name.split(' ')[0]}.</h1>
+                      <div className="page-sub">{todayPriorityText}</div>
+                    </div>
+                    <Button variant="success" onClick={() => openOperation('Receipt')}>＋ New operation</Button>
+                  </div>
+
+                  <div className="today-grid">
+                    <div className="today-hero">
+                      <h2>{lowStockProducts.length ? `${lowStockProducts.length} stock watch items` : 'Inventory health is strong'}</h2>
+                      <ul className="today-list">
+                        <li><span>{products.length} tracked products</span><span className="mini-tag green">{products.length}</span></li>
+                        <li><span>{totalTrackedUnits} units on hand</span><span className="mini-tag blue">{totalTrackedUnits}</span></li>
+                        <li><span>{warehouseList.length} active locations</span><span className="mini-tag purple">{warehouseList.length}</span></li>
+                        <li><span>{lowStockProducts.length} low-stock alerts</span><span className="mini-tag orange">{lowStockProducts.length}</span></li>
+                      </ul>
+                    </div>
+
+                    <div className="feature-card">
+                      <div className="feature-head">
+                        <h4>Recommended actions</h4>
+                        <button className="link-button" type="button" onClick={() => setPage('Products')}>Review</button>
+                      </div>
+                      <ul className="feature-list">
+                        {attentionItems.length > 0 && lowStockProducts.length > 0 ? (
+                          attentionItems.map((item) => (
+                            <li key={item.id}><span>{item.name}</span><span className="mini-tag orange">!</span></li>
+                          ))
+                        ) : (
+                          <li><span>No stock alerts right now</span><span className="mini-tag green">✓</span></li>
+                        )}
+                      </ul>
+                    </div>
+                  </div>
+
+                  <div className="grid-3" style={{ marginTop: 16 }}>
+                    <div className="feature-card">
+                      <div className="feature-head">
+                        <h4>Ask Stockwise</h4>
+                        <button className="link-button" type="button" onClick={() => setCommandPaletteOpen(true)}>Open</button>
+                      </div>
+                      <ul className="feature-list">
+                        <li><span>Which products need restock?</span><span className="mini-tag orange">{lowStockProducts.length}</span></li>
+                        <li><span>Where is the most stock held?</span><span className="mini-tag blue">{warehouseList.length}</span></li>
+                        <li><span>How many records changed today?</span><span className="mini-tag green">{docs.length}</span></li>
+                      </ul>
+                    </div>
+                    <div className="feature-card">
+                      <div className="feature-head">
+                        <h4>Operational focus</h4>
+                        <button className="link-button" type="button" onClick={() => setPage('Operations')}>Log</button>
+                      </div>
+                      <ul className="feature-list">
+                        <li><span>Receipts pending</span><span>{docs.filter((doc) => doc.type === 'Receipt').length}</span></li>
+                        <li><span>Transfers queued</span><span>{docs.filter((doc) => doc.type === 'Internal').length}</span></li>
+                        <li><span>Products out of stock</span><span>{outOfStockCount}</span></li>
+                      </ul>
+                    </div>
+                    <div className="feature-card">
+                      <div className="feature-head">
+                        <h4>Inventory health</h4>
+                        <button className="link-button" type="button" onClick={() => setPage('Reports')}>View</button>
+                      </div>
+                      <ul className="feature-list">
+                        <li><span>Available value</span><span>{moneyFormatter.format(totalInventoryValue)}</span></li>
+                        <li><span>Tracked units</span><span>{formatNumber(totalTrackedUnits)}</span></li>
+                        <li><span>Product coverage</span><span>{products.length ? `${Math.round((activeProductCount / products.length) * 100)}%` : '0%'}</span></li>
+                      </ul>
+                    </div>
+                  </div>
+
+                  <div className="grid-3" style={{ marginTop: 16 }}>
+                    <div className="feature-card">
+                      <div className="feature-head">
+                        <h4>Today's activity</h4>
+                        <button className="link-button" type="button" onClick={() => setPage('Operations')}>Open</button>
+                      </div>
+                      <ul className="feature-list">
+                        {docs.slice(0, 4).map((doc) => (
+                          <li key={`${doc.id}-today`}><span>{doc.product}</span><span>{doc.type}</span></li>
+                        ))}
+                      </ul>
+                    </div>
+                    <div className="feature-card">
+                      <div className="feature-head">
+                        <h4>Inventory health</h4>
+                        <button className="link-button" type="button" onClick={() => setPage('Reports')}>Details</button>
+                      </div>
+                      <ul className="feature-list">
+                        <li><span>Stock availability</span><span>{products.length ? `${Math.max(0, Math.min(100, Math.round(((activeProductCount / products.length) * 100))))}%` : '0%'}</span></li>
+                        <li><span>Inventory accuracy</span><span>{docs.length ? '96%' : '—'}</span></li>
+                        <li><span>Out of stock</span><span>{outOfStockCount}</span></li>
+                        <li><span>Value at risk</span><span>{moneyFormatter.format(Math.max(0, lowStockProducts.reduce((sum, product) => sum + totalStock(product) * Number(product.price || 0), 0)))}</span></li>
+                      </ul>
+                    </div>
+                    <div className="feature-card">
+                      <div className="feature-head">
+                        <h4>Live operations</h4>
+                        <button className="link-button" type="button" onClick={() => setPage('Operations')}>Log</button>
+                      </div>
+                      <ul className="feature-list">
+                        <li><span>Receipts</span><span>{currentReceipts}</span></li>
+                        <li><span>Transfers</span><span>{docs.filter((doc) => doc.type === 'Internal').length}</span></li>
+                        <li><span>Adjustments</span><span>{docs.filter((doc) => doc.type === 'Adjustment').length}</span></li>
+                        <li><span>Invoices due</span><span>{invoices.filter((invoice) => invoice.status === 'Unpaid').length}</span></li>
+                      </ul>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {page === 'Dashboard' && (
+                <>
+                  <div className="page-row">
+                    <div>
+                      <div className="eyebrow">Inventory command center</div>
+                      <h1 className="page-head">Operational dashboard</h1>
+                      <div className="page-sub">What do you have, where is it, and what needs attention today?</div>
+                    </div>
+                    <Button variant="success" onClick={() => openOperation('Receipt')}>＋ New operation</Button>
+                  </div>
+
+                  <Row className="g-3 mb-4">
+                    <Col sm={6} xl={3}>
+                      <Card className="kpi-card">
+                        <Card.Body>
+                          <div className="kpi-top">
+                            <span className="kpi-label">Inventory value</span>
+                            <span className="kpi-icon icon-blue">$</span>
+                          </div>
+                          <div className="kpi-value">{new Intl.NumberFormat(undefined, { style: 'currency', currency: settings.currency }).format(totalInventoryValue)}</div>
+                          <div className="kpi-foot">Across {warehouseList.length} active locations</div>
+                        </Card.Body>
+                      </Card>
+                    </Col>
+                    <Col sm={6} xl={3}>
+                      <Card className="kpi-card">
+                        <Card.Body>
+                          <div className="kpi-top">
+                            <span className="kpi-label">Low stock</span>
+                            <span className="kpi-icon icon-gold">!</span>
+                          </div>
+                          <div className="kpi-value">{lowStockProducts.length}</div>
+                          <div className="kpi-foot">{outOfStockCount} items currently out of stock</div>
+                        </Card.Body>
+                      </Card>
+                    </Col>
+                    <Col sm={6} xl={3}>
+                      <Card className="kpi-card">
+                        <Card.Body>
+                          <div className="kpi-top">
+                            <span className="kpi-label">Total units</span>
+                            <span className="kpi-icon icon-green">▣</span>
+                          </div>
+                          <div className="kpi-value">{formatNumber(products.reduce((sum, product) => sum + totalStock(product), 0))}</div>
+                          <div className="kpi-foot">Across all products and warehouses</div>
+                        </Card.Body>
+                      </Card>
+                    </Col>
+                    <Col sm={6} xl={3}>
+                      <Card className="kpi-card">
+                        <Card.Body>
+                          <div className="kpi-top">
+                            <span className="kpi-label">Incoming stock</span>
+                            <span className="kpi-icon icon-purple">↓</span>
+                          </div>
+                          <div className="kpi-value">{currentReceipts}</div>
+                          <div className="kpi-foot">Receipts queued for validation</div>
+                        </Card.Body>
+                      </Card>
+                    </Col>
+                  </Row>
+
+                  {lowStockProducts.length > 0 && (
+                    <div className="inventory-alert mb-4" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+                      <span><strong>Stock attention needed:</strong> {lowStockProducts.length} products are at or below the current alert threshold.</span>
+                      <button type="button" className="link-button" onClick={() => setPage('Products')}>Review products →</button>
+                    </div>
+                  )}
+
+                  <div className="grid-3" style={{ marginBottom: 16 }}>
+                    {[
+                      ['Receipt', '↓', 'icon-green', 'Receive incoming goods'],
+                      ['Delivery', '↑', 'icon-blue', 'Dispatch or ship stock'],
+                      ['Internal', '⇄', 'icon-purple', 'Transfer inventory between locations'],
+                    ].map(([type, icon, tone, copy]) => (
+                      <button key={type} type="button" className="action-card" onClick={() => openOperation(type)}>
+                        <span className={`action-icon ${tone}`}>{icon}</span>
+                        <span className="action-copy">
+                          <strong>{type === 'Internal' ? 'Internal transfer' : type}</strong>
+                          <span>{copy}</span>
+                        </span>
+                        <span style={{ marginLeft: 'auto', color: '#9aa7b8' }}>›</span>
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="section-card" style={{ marginBottom: 16 }}>
+                    <div className="section-head">
+                      <div>
+                        <h2 className="section-heading">Recent activity</h2>
+                        <div className="section-sub">Latest inventory movements and ledger events</div>
+                      </div>
+                      <button type="button" className="link-button" onClick={() => setPage('Operations')}>View full log</button>
+                    </div>
+                    <div className="table-responsive">
+                      <Table hover>
+                        <thead>
+                          <tr>
+                            <th>Reference</th>
+                            <th>Type</th>
+                            <th>Product</th>
+                            <th>Qty</th>
+                            <th>Location</th>
+                            <th>Status</th>
+                            <th>Date</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {docs.slice(0, 5).map((doc) => (
+                            <tr key={`${doc.id}-dashboard`}>
+                              <td><span className="ref-code">{doc.id}</span></td>
+                              <td>{doc.type}</td>
+                              <td><span className="product-name">{doc.product}</span></td>
+                              <td>{doc.type === 'Receipt' ? '+' : doc.type === 'Delivery' ? '−' : doc.type === 'Internal' ? '⇄' : '±'} {formatNumber(doc.qty)}</td>
+                              <td>{doc.location}</td>
+                              <td><StatusBadge status={doc.status} /></td>
+                              <td>{doc.date}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </Table>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {page === 'Products' && (
+                <>
+                  <div className="page-row">
+                    <div>
+                      <div className="eyebrow">Catalog</div>
+                      <h1 className="page-head">Products</h1>
+                      <div className="page-sub">Track product records, pricing, stock health, and reorder readiness.</div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      <Button variant="outline-secondary" onClick={() => { setImportPreview([]); setImportMessage(''); setModal('import'); }}>Import file</Button>
+                      <Button variant="success" onClick={openProductModal}>＋ Add product</Button>
+                    </div>
+                  </div>
+
+                  <div className="section-card">
+                    <div className="section-head section-head-wrap">
+                      <div>
+                        <h2 className="section-heading">Catalog overview <span className="soft-count">({filteredProducts.length})</span></h2>
+                        <div className="section-sub">Current stock availability and product health</div>
+                      </div>
+                      <div className="toolbar toolbar-wrap">
+                        <InputGroup className="search-box">
+                          <InputGroup.Text className="input-glyph">⌕</InputGroup.Text>
+                          <Form.Control value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search products or SKUs" />
+                        </InputGroup>
+                        <Form.Select className="filter-select" value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}>
+                          <option value="All">All categories</option>
+                          {[...new Set(products.map((product) => product.category))].map((category) => <option key={category} value={category}>{category}</option>)}
+                        </Form.Select>
+                        <Form.Select className="filter-select" value={productSort} onChange={(event) => setProductSort(event.target.value)}>
+                          <option value="name-asc">Name A–Z</option>
+                          <option value="name-desc">Name Z–A</option>
+                          <option value="stock-desc">Stock highest</option>
+                          <option value="price-asc">Price lowest</option>
+                        </Form.Select>
+                        <Form.Select className="filter-select" value={locationFilter} onChange={(event) => setLocationFilter(event.target.value)}>
+                          <option value="All">All locations</option>
+                          {warehouseList.map((location) => <option key={location} value={location}>{location}</option>)}
+                        </Form.Select>
+                      </div>
+                    </div>
+
+                    <div className="table-responsive">
+                      <Table hover>
+                        <thead>
+                          <tr>
+                            <th>Product</th>
+                            <th>Category</th>
+                            <th>Price</th>
+                            <th>On hand</th>
+                            <th>Reorder</th>
+                            <th>Status</th>
+                            <th>Locations</th>
+                            <th>Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {filteredProducts.length === 0 ? (
+                            <tr>
+                              <td colSpan="8">
+                                <div className="empty-state">No products match the current filters.</div>
+                              </td>
+                            </tr>
+                          ) : (
+                            filteredProducts.map((product) => {
+                              const quantity = totalStock(product);
+                              const status = quantity === 0 ? 'Out of stock' : isLowStock(product, settings.alertRule) ? 'Low stock' : 'Healthy';
+                              return (
+                                <tr key={product.id}>
+                                  <td>
+                                    <div className="product-name">{product.name}</div>
+                                    <div style={{ color: '#8b9aad', fontSize: 10 }}>{product.sku} · {product.unit}</div>
+                                  </td>
+                                  <td>{product.category}</td>
+                                  <td>{new Intl.NumberFormat(undefined, { style: 'currency', currency: settings.currency }).format(product.price)}</td>
+                                  <td>{formatNumber(quantity)} {product.unit}</td>
+                                  <td>{formatNumber(product.reorder)} {product.unit}</td>
+                                  <td><StatusBadge status={status} /></td>
+                                  <td>
+                                    {Object.entries(product.stock || {}).map(([location, value]) => (
+                                      <div key={`${product.id}-${location}`} style={{ fontSize: 11, color: '#425a74' }}>
+                                        {location}: <strong>{formatNumber(value)}</strong>
+                                      </div>
+                                    ))}
+                                  </td>
+                                  <td>
+                                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                                      <Button size="sm" variant="outline-secondary" onClick={() => editProduct(product)}>Edit</Button>
+                                      <Button size="sm" variant="outline-danger" onClick={() => deleteProduct(product)}>Delete</Button>
+                                    </div>
+                                  </td>
+                                </tr>
+                              );
+                            })
+                          )}
+                        </tbody>
+                      </Table>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {page === 'Operations' && (
+                <>
+                  <div className="page-row">
+                    <div>
+                      <div className="eyebrow">Operations</div>
+                      <h1 className="page-head">Movement log</h1>
+                      <div className="page-sub">Track receipts, deliveries, internal transfers, and adjustments.</div>
+                    </div>
+                    <Button variant="success" onClick={() => openOperation('Receipt')}>＋ New receipt</Button>
+                  </div>
+                  <OperationsTable docs={visibleOperationDocs} warehouseList={warehouseList} search={search} setSearch={setSearch} typeFilter={typeFilter} setTypeFilter={setTypeFilter} statusFilter={statusFilter} setStatusFilter={setStatusFilter} locationFilter={locationFilter} setLocationFilter={setLocationFilter} ledger />
+                </>
+              )}
+
+              {page === 'Suppliers' && (
+                <>
+                  <div className="page-row">
+                    <div>
+                      <div className="eyebrow">Partners</div>
+                      <h1 className="page-head">Suppliers</h1>
+                      <div className="page-sub">Manage vendor relationships, lead times, and supply continuity.</div>
+                    </div>
+                    <Button variant="success" onClick={() => { setSupplierForm({ name: '', contact: '', email: '', phone: '', leadTime: '5', category: 'General' }); setModal('supplier'); }}>＋ Add supplier</Button>
+                  </div>
+
+                  <Row className="g-3 mb-4">
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Active suppliers</div><div className="kpi-value">{suppliers.length}</div><div className="kpi-foot">Vendors in your network</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Avg. lead time</div><div className="kpi-value">{suppliers.length ? Math.round(suppliers.reduce((sum, supplier) => sum + Number(supplier.leadTime || 0), 0) / suppliers.length) : 0}d</div><div className="kpi-foot">Across current supplier records</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Open PO value</div><div className="kpi-value">{moneyFormatter.format(purchaseOrders.filter((order) => order.status !== 'Received').reduce((sum, order) => sum + Number(order.total || 0), 0))}</div><div className="kpi-foot">Current procurement commitments</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Top category</div><div className="kpi-value">{suppliers.length ? [...new Set(suppliers.map((supplier) => supplier.category))].sort((a, b) => a.localeCompare(b))[0] || 'General' : '—'}</div><div className="kpi-foot">Primary supply segment</div></Card.Body></Card></Col>
+                  </Row>
+
+                  <div className="section-card" style={{ marginBottom: 16 }}>
+                    <div className="section-head">
+                      <div>
+                        <h2 className="section-heading">Supplier SLA watchlist</h2>
+                        <div className="section-sub">Delivery risk based on lead time, open purchase commitments, and delayed fulfillment.</div>
+                      </div>
+                    </div>
+                    <div className="table-responsive">
+                      <Table hover>
+                        <thead>
+                          <tr>
+                            <th>Supplier</th>
+                            <th>Category</th>
+                            <th>Lead time</th>
+                            <th>On-time rate</th>
+                            <th>Open POs</th>
+                            <th>Delayed</th>
+                            <th>Risk</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {supplierSlaSummary.length === 0 ? (
+                            <tr><td colSpan="7"><div className="empty-state">No suppliers are in the current watchlist.</div></td></tr>
+                          ) : (
+                            supplierSlaSummary.map((supplier) => (
+                              <tr key={supplier.id}>
+                                <td className="product-name">{supplier.name}</td>
+                                <td>{supplier.category}</td>
+                                <td>{supplier.leadTime}d</td>
+                                <td>{Math.round(supplier.onTimeRate)}%</td>
+                                <td>{supplier.openOrders}</td>
+                                <td>{supplier.lateShipments}</td>
+                                <td><StatusBadge status={supplier.riskLevel} /></td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </Table>
+                    </div>
+                  </div>
+
+                  <div className="section-card">
+                    <div className="section-head">
+                      <div>
+                        <h2 className="section-heading">Supplier directory</h2>
+                        <div className="section-sub">Key contacts, lead time, and supply profile</div>
+                      </div>
+                    </div>
+                    <div className="table-responsive">
+                      <Table hover>
+                        <thead>
+                          <tr>
+                            <th>Supplier</th>
+                            <th>Contact</th>
+                            <th>Category</th>
+                            <th>Lead time</th>
+                            <th>Email</th>
+                            <th>Phone</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {suppliers.length === 0 ? (
+                            <tr><td colSpan="6"><div className="empty-state">No suppliers have been added yet.</div></td></tr>
+                          ) : (
+                            suppliers.map((supplier) => (
+                              <tr key={supplier.id}>
+                                <td className="product-name">{supplier.name}</td>
+                                <td>{supplier.contact || '—'}</td>
+                                <td>{supplier.category}</td>
+                                <td>{supplier.leadTime} days</td>
+                                <td>{supplier.email || '—'}</td>
+                                <td>{supplier.phone || '—'}</td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </Table>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {page === 'Procurement' && (
+                <>
+                  <div className="page-row">
+                    <div>
+                      <div className="eyebrow">Procurement</div>
+                      <h1 className="page-head">Purchase orders</h1>
+                      <div className="page-sub">Create, track, and receive purchase commitments against your product catalog.</div>
+                    </div>
+                    <Button variant="success" onClick={() => { setPurchaseForm({ supplierId: suppliers[0]?.id || '', productId: products[0]?.id || '', qty: '0', unitCost: '0', expectedDate: '', location: warehouseList[0] || '', status: 'Draft' }); setModal('purchase'); }}>＋ New purchase order</Button>
+                  </div>
+
+                  <Row className="g-3 mb-4">
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Open orders</div><div className="kpi-value">{purchaseOrders.filter((order) => order.status !== 'Received').length}</div><div className="kpi-foot">Orders awaiting receipt</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Received this month</div><div className="kpi-value">{purchaseOrders.filter((order) => order.status === 'Received').length}</div><div className="kpi-foot">Completed inbound shipments</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Pending value</div><div className="kpi-value">{moneyFormatter.format(purchaseOrders.filter((order) => order.status !== 'Received').reduce((sum, order) => sum + Number(order.total || 0), 0))}</div><div className="kpi-foot">Committed purchasing spend</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Avg. order cost</div><div className="kpi-value">{purchaseOrders.length ? moneyFormatter.format(purchaseOrders.reduce((sum, order) => sum + Number(order.total || 0), 0) / purchaseOrders.length) : moneyFormatter.format(0)}</div><div className="kpi-foot">Across all purchase orders</div></Card.Body></Card></Col>
+                  </Row>
+
+                  <div className="section-card" style={{ marginBottom: 16 }}>
+                    <div className="section-head">
+                      <div>
+                        <h2 className="section-heading">Recommended replenishment</h2>
+                        <div className="section-sub">Suggested purchase quantities based on stock gap, demand, and supplier lead time.</div>
+                      </div>
+                    </div>
+                    <div className="table-responsive">
+                      <Table hover>
+                        <thead>
+                          <tr>
+                            <th>Product</th>
+                            <th>On hand</th>
+                            <th>Reorder</th>
+                            <th>Demand / 30d</th>
+                            <th>Suggested qty</th>
+                            <th>Supplier</th>
+                            <th>Priority</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {procurementRecommendations.length === 0 ? (
+                            <tr><td colSpan="7"><div className="empty-state">No replenishment recommendations are needed right now.</div></td></tr>
+                          ) : (
+                            procurementRecommendations.map((item) => (
+                              <tr key={item.id}>
+                                <td className="product-name">{item.name}</td>
+                                <td>{formatNumber(item.stock)}</td>
+                                <td>{formatNumber(item.reorder)}</td>
+                                <td>{formatNumber(item.demand)}</td>
+                                <td>{formatNumber(item.recommendedQty)}</td>
+                                <td>{item.supplierName}</td>
+                                <td><StatusBadge status={item.priority === 'Critical' ? 'Critical' : item.priority === 'High' ? 'Waiting' : item.priority === 'Medium' ? 'Scheduled' : 'Done'} /></td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </Table>
+                    </div>
+                  </div>
+
+                  <div className="section-card">
+                    <div className="section-head">
+                      <div>
+                        <h2 className="section-heading">Purchase order list</h2>
+                        <div className="section-sub">Current backlog, expected delivery dates, and procurement status</div>
+                      </div>
+                    </div>
+                    <div className="table-responsive">
+                      <Table hover>
+                        <thead>
+                          <tr>
+                            <th>PO ID</th>
+                            <th>Supplier</th>
+                            <th>Product</th>
+                            <th>Qty</th>
+                            <th>Total</th>
+                            <th>Location</th>
+                            <th>Status</th>
+                            <th>Action</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {purchaseOrders.length === 0 ? (
+                            <tr><td colSpan="8"><div className="empty-state">No purchase orders have been created yet.</div></td></tr>
+                          ) : (
+                            purchaseOrders.map((order) => (
+                              <tr key={order.id}>
+                                <td><span className="ref-code">{order.id}</span></td>
+                                <td className="product-name">{order.supplierName}</td>
+                                <td>{order.productName}</td>
+                                <td>{formatNumber(order.qty)}</td>
+                                <td>{moneyFormatter.format(Number(order.total || 0))}</td>
+                                <td>{order.location || '—'}</td>
+                                <td><StatusBadge status={order.status === 'Received' ? 'Done' : order.status === 'Draft' ? 'Draft' : 'Waiting'} /></td>
+                                <td>
+                                  {order.status !== 'Received' ? (
+                                    <Button size="sm" variant="outline-secondary" onClick={() => receivePurchaseOrder(order)}>Mark received</Button>
+                                  ) : (
+                                    <span style={{ color: '#7f96af', fontSize: 12 }}>Received</span>
+                                  )}
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </Table>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {page === 'Customers' && (
+                <>
+                  <div className="page-row">
+                    <div>
+                      <div className="eyebrow">Partners</div>
+                      <h1 className="page-head">Customers</h1>
+                      <div className="page-sub">Track customers, order volume, and regional activity.</div>
+                    </div>
+                    <Button variant="success" onClick={() => { setCustomerForm({ name: '', email: '', phone: '', tier: 'Standard', region: 'North' }); setModal('customer'); }}>＋ Add customer</Button>
+                  </div>
+
+                  <Row className="g-3 mb-4">
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Customers</div><div className="kpi-value">{customers.length}</div><div className="kpi-foot">Active customer records</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Orders</div><div className="kpi-value">{salesOrders.length}</div><div className="kpi-foot">Sales orders created</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Top region</div><div className="kpi-value">{customers.length ? [...new Set(customers.map((customer) => customer.region))].sort((a, b) => a.localeCompare(b))[0] : '—'}</div><div className="kpi-foot">Highest customer concentration</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Revenue</div><div className="kpi-value">{moneyFormatter.format(salesOrders.reduce((sum, order) => sum + Number(order.total || 0), 0))}</div><div className="kpi-foot">Current sales value in the ledger</div></Card.Body></Card></Col>
+                  </Row>
+
+                  <div className="section-card">
+                    <div className="section-head">
+                      <div>
+                        <h2 className="section-heading">Customer list</h2>
+                        <div className="section-sub">Customer profile and account details</div>
+                      </div>
+                    </div>
+                    <div className="table-responsive">
+                      <Table hover>
+                        <thead>
+                          <tr>
+                            <th>Customer</th>
+                            <th>Email</th>
+                            <th>Phone</th>
+                            <th>Region</th>
+                            <th>Tier</th>
+                            <th>Orders</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {customers.length === 0 ? (
+                            <tr><td colSpan="6"><div className="empty-state">No customers have been added yet.</div></td></tr>
+                          ) : (
+                            customers.map((customer) => (
+                              <tr key={customer.id}>
+                                <td className="product-name">{customer.name}</td>
+                                <td>{customer.email || '—'}</td>
+                                <td>{customer.phone || '—'}</td>
+                                <td>{customer.region}</td>
+                                <td>{customer.tier}</td>
+                                <td>{Number(customer.orders) || 0}</td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </Table>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {page === 'Sales' && (
+                <>
+                  <div className="page-row">
+                    <div>
+                      <div className="eyebrow">Sales</div>
+                      <h1 className="page-head">Sales orders</h1>
+                      <div className="page-sub">Track outbound orders, fulfillment status, and customer demand.</div>
+                    </div>
+                    <Button variant="success" onClick={() => { setSalesForm({ customerId: customers[0]?.id || '', productId: products[0]?.id || '', qty: '1', unitPrice: '0', status: 'Draft', location: warehouseList[0] || '', expectedDate: '' }); setModal('sales'); }}>＋ New sales order</Button>
+                  </div>
+
+                  <Row className="g-3 mb-4">
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Draft</div><div className="kpi-value">{salesOrders.filter((order) => order.status === 'Draft').length}</div><div className="kpi-foot">Awaiting confirmation</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Confirmed</div><div className="kpi-value">{salesOrders.filter((order) => order.status === 'Confirmed').length}</div><div className="kpi-foot">Orders ready to ship</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Shipped</div><div className="kpi-value">{salesOrders.filter((order) => order.status === 'Shipped').length}</div><div className="kpi-foot">Fulfilled orders</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Order value</div><div className="kpi-value">{moneyFormatter.format(salesOrders.reduce((sum, order) => sum + Number(order.total || 0), 0))}</div><div className="kpi-foot">Total sales value</div></Card.Body></Card></Col>
+                  </Row>
+
+                  <div className="section-card">
+                    <div className="section-head">
+                      <div>
+                        <h2 className="section-heading">Sales order ledger</h2>
+                        <div className="section-sub">Current demand, customer, and fulfillment status</div>
+                      </div>
+                    </div>
+                    <div className="table-responsive">
+                      <Table hover>
+                        <thead>
+                          <tr>
+                            <th>Order</th>
+                            <th>Customer</th>
+                            <th>Product</th>
+                            <th>Qty</th>
+                            <th>Total</th>
+                            <th>Status</th>
+                            <th>Location</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {salesOrders.length === 0 ? (
+                            <tr><td colSpan="7"><div className="empty-state">No sales orders have been created yet.</div></td></tr>
+                          ) : (
+                            salesOrders.map((order) => (
+                              <tr key={order.id}>
+                                <td><span className="ref-code">{order.id}</span></td>
+                                <td className="product-name">{order.customerName}</td>
+                                <td>{order.productName}</td>
+                                <td>{formatNumber(order.qty)}</td>
+                                <td>{moneyFormatter.format(Number(order.total || 0))}</td>
+                                <td><StatusBadge status={order.status} /></td>
+                                <td>{order.location}</td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </Table>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {page === 'Fulfillment' && (
+                <>
+                  <div className="page-row">
+                    <div>
+                      <div className="eyebrow">Fulfillment</div>
+                      <h1 className="page-head">Shipping & dispatch</h1>
+                      <div className="page-sub">Coordinate outbound deliveries, carriers, and shipping readiness.</div>
+                    </div>
+                    <Button variant="success" onClick={() => { setShipmentForm({ orderId: salesOrders[0]?.id || '', carrier: 'UPS', tracking: '', status: 'Ready', location: warehouseList[0] || '' }); setModal('shipment'); }}>＋ Create shipment</Button>
+                  </div>
+
+                  <Row className="g-3 mb-4">
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Ready</div><div className="kpi-value">{shipments.filter((shipment) => shipment.status === 'Ready').length}</div><div className="kpi-foot">Awaiting dispatch</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">In transit</div><div className="kpi-value">{shipments.filter((shipment) => shipment.status === 'In Transit').length}</div><div className="kpi-foot">Active deliveries</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Delivered</div><div className="kpi-value">{shipments.filter((shipment) => shipment.status === 'Delivered').length}</div><div className="kpi-foot">Completed shipments</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Units shipped</div><div className="kpi-value">{formatNumber(shipments.reduce((sum, shipment) => sum + Number(shipment.qty || 0), 0))}</div><div className="kpi-foot">Total outbound units</div></Card.Body></Card></Col>
+                  </Row>
+
+                  <div className="section-card">
+                    <div className="section-head">
+                      <div>
+                        <h2 className="section-heading">Shipment ledger</h2>
+                        <div className="section-sub">Order, carrier, tracking, and dispatch status</div>
+                      </div>
+                    </div>
+                    <div className="table-responsive">
+                      <Table hover>
+                        <thead>
+                          <tr>
+                            <th>Shipment</th>
+                            <th>Order</th>
+                            <th>Customer</th>
+                            <th>Product</th>
+                            <th>Qty</th>
+                            <th>Carrier</th>
+                            <th>Tracking</th>
+                            <th>Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {shipments.length === 0 ? (
+                            <tr><td colSpan="8"><div className="empty-state">No shipments have been created yet.</div></td></tr>
+                          ) : (
+                            shipments.map((shipment) => (
+                              <tr key={shipment.id}>
+                                <td><span className="ref-code">{shipment.id}</span></td>
+                                <td>{shipment.orderId}</td>
+                                <td className="product-name">{shipment.customerName}</td>
+                                <td>{shipment.productName}</td>
+                                <td>{formatNumber(shipment.qty)}</td>
+                                <td>{shipment.carrier}</td>
+                                <td>{shipment.tracking}</td>
+                                <td><StatusBadge status={shipment.status} /></td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </Table>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {page === 'Returns' && (
+                <>
+                  <div className="page-row">
+                    <div>
+                      <div className="eyebrow">Returns</div>
+                      <h1 className="page-head">Return processing</h1>
+                      <div className="page-sub">Track customer returns, restock adjustments, and exception handling.</div>
+                    </div>
+                    <Button variant="success" onClick={() => { setReturnForm({ orderId: salesOrders[0]?.id || '', customerId: customers[0]?.id || '', productId: products[0]?.id || '', qty: '1', reason: 'Damaged', location: warehouseList[0] || '' }); setModal('return'); }}>＋ Process return</Button>
+                  </div>
+
+                  <Row className="g-3 mb-4">
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Open returns</div><div className="kpi-value">{returns.filter((item) => item.status === 'Pending').length}</div><div className="kpi-foot">Awaiting review</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Approved</div><div className="kpi-value">{returns.filter((item) => item.status === 'Approved').length}</div><div className="kpi-foot">Returned to inventory</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Units returned</div><div className="kpi-value">{formatNumber(returns.reduce((sum, item) => sum + Number(item.qty || 0), 0))}</div><div className="kpi-foot">Total units in return flow</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Most frequent reason</div><div className="kpi-value">{returns.length ? [...new Set(returns.map((item) => item.reason))].sort((a, b) => a.localeCompare(b))[0] : '—'}</div><div className="kpi-foot">Returned product issue</div></Card.Body></Card></Col>
+                  </Row>
+
+                  <div className="section-card">
+                    <div className="section-head">
+                      <div>
+                        <h2 className="section-heading">Return ledger</h2>
+                        <div className="section-sub">Customer returns, cause, and stock restoration status</div>
+                      </div>
+                    </div>
+                    <div className="table-responsive">
+                      <Table hover>
+                        <thead>
+                          <tr>
+                            <th>Return</th>
+                            <th>Customer</th>
+                            <th>Product</th>
+                            <th>Qty</th>
+                            <th>Reason</th>
+                            <th>Location</th>
+                            <th>Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {returns.length === 0 ? (
+                            <tr><td colSpan="7"><div className="empty-state">No return records yet.</div></td></tr>
+                          ) : (
+                            returns.map((item) => (
+                              <tr key={item.id}>
+                                <td><span className="ref-code">{item.id}</span></td>
+                                <td className="product-name">{item.customerName}</td>
+                                <td>{item.productName}</td>
+                                <td>{formatNumber(item.qty)}</td>
+                                <td>{item.reason}</td>
+                                <td>{item.location}</td>
+                                <td><StatusBadge status={item.status} /></td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </Table>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {page === 'Warehouses' && (
+                <>
+                  <div className="page-row">
+                    <div>
+                      <div className="eyebrow">Locations</div>
+                      <h1 className="page-head">Warehouses & locations</h1>
+                      <div className="page-sub">Keep inventory organized across every warehouse, zone, and staging area.</div>
+                    </div>
+                    <Button variant="success" onClick={() => { setWarehouseForm({ name: '' }); setModal('warehouse'); }}>＋ Add location</Button>
+                  </div>
+
+                  <div className="warehouse-grid">
+                    {warehouseList.map((location) => {
+                      const totalUnits = products.reduce((sum, product) => sum + Number(product.stock?.[location] || 0), 0);
+                      const activeProducts = products.filter((product) => Number(product.stock?.[location] || 0) > 0).length;
+                      return (
+                        <div key={location} className="warehouse-tile warehouse-card">
+                          <div className="feature-head">
+                            <h4>{location}</h4>
+                            <div style={{ display: 'flex', gap: 6 }}>
+                              <Button size="sm" variant="outline-secondary" onClick={() => { setRenameTarget(location); setRenameValue(location); setModal('rename'); }}>Rename</Button>
+                              <Button size="sm" variant="outline-danger" onClick={() => deleteWarehouse(location)}>Remove</Button>
+                            </div>
+                          </div>
+                          <div className="value">{formatNumber(totalUnits)}</div>
+                          <div className="small">Total units in storage</div>
+                          <div className="small" style={{ marginTop: 8 }}>{activeProducts} active product lines</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+
+              {page === 'Approvals' && (
+                <>
+                  <div className="page-row">
+                    <div>
+                      <div className="eyebrow">Control layer</div>
+                      <h1 className="page-head">Approvals</h1>
+                      <div className="page-sub">Review pending actions before they move stock, cash, or supply commitments forward.</div>
+                    </div>
+                  </div>
+
+                  <Row className="g-3 mb-4">
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Pending</div><div className="kpi-value">{approvalQueue.length}</div><div className="kpi-foot">Items awaiting review</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Sales drafts</div><div className="kpi-value">{salesOrders.filter((order) => order.status === 'Draft').length}</div><div className="kpi-foot">Orders pending approval</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Return checks</div><div className="kpi-value">{returns.filter((item) => item.status === 'Pending').length}</div><div className="kpi-foot">Customer returns under review</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Draft POs</div><div className="kpi-value">{purchaseOrders.filter((order) => order.status === 'Draft').length}</div><div className="kpi-foot">Procurement waiting approval</div></Card.Body></Card></Col>
+                  </Row>
+
+                  <div className="section-card">
+                    <div className="section-head">
+                      <div>
+                        <h2 className="section-heading">Approval queue</h2>
+                        <div className="section-sub">Approve or reject operational actions before they affect the warehouse or ledger.</div>
+                      </div>
+                    </div>
+                    <div className="table-responsive">
+                      <Table hover>
+                        <thead>
+                          <tr>
+                            <th>Request</th>
+                            <th>Type</th>
+                            <th>Subject</th>
+                            <th>Reference</th>
+                            <th>Amount</th>
+                            <th>Status</th>
+                            <th>Action</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {approvalQueue.length === 0 ? (
+                            <tr><td colSpan="7"><div className="empty-state">No items require approval.</div></td></tr>
+                          ) : (
+                            approvalQueue.map((item) => (
+                              <tr key={item.id}>
+                                <td><span className="ref-code">{item.id}</span></td>
+                                <td>{item.type}</td>
+                                <td className="product-name">{item.subject}</td>
+                                <td>{item.reference}</td>
+                                <td>{typeof item.amount === 'number' ? moneyFormatter.format(item.amount) : item.amount}</td>
+                                <td><StatusBadge status={item.status} /></td>
+                                <td>
+                                  <div style={{ display: 'flex', gap: 6 }}>
+                                    <Button size="sm" variant="success" onClick={() => approveQueueItem(item)}>Approve</Button>
+                                    <Button size="sm" variant="outline-danger" onClick={() => rejectQueueItem(item)}>Reject</Button>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </Table>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {page === 'Access' && (
+                <>
+                  <div className="page-row">
+                    <div>
+                      <div className="eyebrow">Security</div>
+                      <h1 className="page-head">Access & roles</h1>
+                      <div className="page-sub">Assign responsibility by role and keep operational permissions aligned to the right team.</div>
+                    </div>
+                  </div>
+
+                  <Row className="g-3 mb-4">
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Workspace users</div><div className="kpi-value">{users.length}</div><div className="kpi-foot">Accounts active in this workspace</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Roles</div><div className="kpi-value">{roleOptions.length}</div><div className="kpi-foot">Operational permission tiers</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Admins</div><div className="kpi-value">{users.filter((user) => (user.role || 'Admin') === 'Admin').length}</div><div className="kpi-foot">Full control and policy access</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Restricted views</div><div className="kpi-value">{users.filter((user) => (user.role || 'Admin') !== 'Admin').length}</div><div className="kpi-foot">Limited to scoped operations</div></Card.Body></Card></Col>
+                  </Row>
+
+                  <div className="section-card">
+                    <div className="section-head">
+                      <div>
+                        <h2 className="section-heading">Role matrix</h2>
+                        <div className="section-sub">Use role-based access to split operations, finance, warehouse, and viewer controls.</div>
+                      </div>
+                    </div>
+                    <div className="table-responsive">
+                      <Table hover>
+                        <thead>
+                          <tr>
+                            <th>User</th>
+                            <th>Email</th>
+                            <th>Role</th>
+                            <th>Access level</th>
+                            <th>Permissions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {users.map((user) => (
+                            <tr key={`${user.email}-${user.role}`}>
+                              <td className="product-name">{user.name}</td>
+                              <td>{user.email}</td>
+                              <td><StatusBadge status={user.role || 'Admin'} /></td>
+                              <td>{roleDefinitions[user.role || 'Admin']?.badge || 'Administrator'}</td>
+                              <td>{(roleDefinitions[user.role || 'Admin']?.pages || []).slice(0, 3).join(', ')}{(roleDefinitions[user.role || 'Admin']?.pages || []).length > 3 ? ' + more' : ''}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </Table>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {page === 'Audit' && (
+                <>
+                  <div className="page-row">
+                    <div>
+                      <div className="eyebrow">Governance</div>
+                      <h1 className="page-head">Audit trail</h1>
+                      <div className="page-sub">Review operational activity, approvals, and movement events across the entire stock control system.</div>
+                    </div>
+                  </div>
+
+                  <Row className="g-3 mb-4">
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Events</div><div className="kpi-value">{auditTrail.length}</div><div className="kpi-foot">Recent tracked changes</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Warehouse</div><div className="kpi-value">{docs.filter((item) => item.type === 'Receipt' || item.type === 'Internal').length}</div><div className="kpi-foot">Stock movement activities</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Approvals</div><div className="kpi-value">{approvalQueue.length}</div><div className="kpi-foot">Items waiting on review</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Cash</div><div className="kpi-value">{moneyFormatter.format(payments.reduce((sum, item) => sum + Number(item.amount || 0), 0))}</div><div className="kpi-foot">Recorded collections</div></Card.Body></Card></Col>
+                  </Row>
+
+                  <div className="section-card">
+                    <div className="section-head">
+                      <div>
+                        <h2 className="section-heading">Latest operational events</h2>
+                        <div className="section-sub">Continuous traceability for disputes, operational reviews, and accountability.</div>
+                      </div>
+                    </div>
+                    <div className="table-responsive">
+                      <Table hover>
+                        <thead>
+                          <tr>
+                            <th>Time</th>
+                            <th>Type</th>
+                            <th>Event</th>
+                            <th>Actor</th>
+                            <th>Reference</th>
+                            <th>Status</th>
+                            <th>Impact</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {auditTrail.length === 0 ? (
+                            <tr><td colSpan="7"><div className="empty-state">No activity has been logged yet.</div></td></tr>
+                          ) : (
+                            auditTrail.map((entry) => (
+                              <tr key={entry.id}>
+                                <td>{new Date(entry.timestamp).toLocaleString()}</td>
+                                <td>{entry.type}</td>
+                                <td className="product-name">{entry.event}</td>
+                                <td>{entry.actor}</td>
+                                <td><span className="ref-code">{entry.reference}</span></td>
+                                <td><StatusBadge status={entry.status} /></td>
+                                <td>{entry.amount ? (typeof entry.amount === 'number' ? moneyFormatter.format(entry.amount) : formatNumber(entry.amount)) : '—'}</td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </Table>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {page === 'Forecasting' && (
+                <>
+                  <div className="page-row">
+                    <div>
+                      <div className="eyebrow">Planning</div>
+                      <h1 className="page-head">Forecasting & risk</h1>
+                      <div className="page-sub">Use current stock, demand patterns, and replenishment risk to prioritize action before shortages or excess inventory appear.</div>
+                    </div>
+                  </div>
+
+                  <Row className="g-3 mb-4">
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">At risk</div><div className="kpi-value">{forecastSignals.filter((item) => item.risk === 'Critical' || item.risk === 'Watch').length}</div><div className="kpi-foot">Items needing action this cycle</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Excess stock</div><div className="kpi-value">{forecastSignals.filter((item) => item.risk === 'Excess').length}</div><div className="kpi-foot">Products above normal coverage</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Avg. coverage</div><div className="kpi-value">{forecastSignals.length ? `${Math.round(forecastSignals.reduce((sum, item) => sum + (Number.isFinite(item.coverageDays) ? item.coverageDays : 0), 0) / forecastSignals.length)}d` : '0d'}</div><div className="kpi-foot">Projected days of supply</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Net flow</div><div className="kpi-value">{formatNumber(forecastSignals.reduce((sum, item) => sum + Number(item.netMovement || 0), 0))}</div><div className="kpi-foot">Net inbound minus outbound units</div></Card.Body></Card></Col>
+                  </Row>
+
+                  <div className="section-card">
+                    <div className="section-head">
+                      <div>
+                        <h2 className="section-heading">Risk overview</h2>
+                        <div className="section-sub">Priority list built from current stock, reorder point, and demand trend.</div>
+                      </div>
+                    </div>
+                    <div className="table-responsive">
+                      <Table hover>
+                        <thead>
+                          <tr>
+                            <th>Product</th>
+                            <th>On hand</th>
+                            <th>Reorder</th>
+                            <th>Demand / 30d</th>
+                            <th>Coverage</th>
+                            <th>Risk</th>
+                            <th>Recommendation</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {forecastSignals.length === 0 ? (
+                            <tr><td colSpan="7"><div className="empty-state">No product forecast is available yet.</div></td></tr>
+                          ) : (
+                            forecastSignals.map((item) => (
+                              <tr key={item.id}>
+                                <td className="product-name">{item.name}</td>
+                                <td>{formatNumber(item.stock)}</td>
+                                <td>{formatNumber(item.reorder)}</td>
+                                <td>{formatNumber(item.demand)}</td>
+                                <td>{Number.isFinite(item.coverageDays) ? `${Math.round(item.coverageDays)}d` : '—'}</td>
+                                <td><StatusBadge status={item.risk} /></td>
+                                <td>{item.recommendation}</td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </Table>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {page === 'Exceptions' && (
+                <>
+                  <div className="page-row">
+                    <div>
+                      <div className="eyebrow">Action center</div>
+                      <h1 className="page-head">Exceptions</h1>
+                      <div className="page-sub">Prioritize live operational issues requiring attention across stock, fulfillment, approval, and cash.</div>
+                    </div>
+                  </div>
+
+                  <Row className="g-3 mb-4">
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Critical</div><div className="kpi-value">{exceptionQueue.filter((item) => item.severity === 'Critical').length}</div><div className="kpi-foot">Immediate intervention required</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Watch</div><div className="kpi-value">{exceptionQueue.filter((item) => item.severity === 'Watch').length}</div><div className="kpi-foot">Needs follow-up soon</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Approval blocks</div><div className="kpi-value">{approvalQueue.length}</div><div className="kpi-foot">Pending operational decisions</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Inventory risk</div><div className="kpi-value">{lowStockProducts.length}</div><div className="kpi-foot">Products below alert threshold</div></Card.Body></Card></Col>
+                  </Row>
+
+                  <div className="section-card">
+                    <div className="section-head">
+                      <div>
+                        <h2 className="section-heading">Exception queue</h2>
+                        <div className="section-sub">Action items sourced from the live workload and control system.</div>
+                      </div>
+                    </div>
+                    <div className="table-responsive">
+                      <Table hover>
+                        <thead>
+                          <tr>
+                            <th>Type</th>
+                            <th>Subject</th>
+                            <th>Detail</th>
+                            <th>Owner</th>
+                            <th>Severity</th>
+                            <th>Open page</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {exceptionQueue.length === 0 ? (
+                            <tr><td colSpan="6"><div className="empty-state">No exceptions are active.</div></td></tr>
+                          ) : (
+                            exceptionQueue.map((item) => (
+                              <tr key={item.id}>
+                                <td>{item.type}</td>
+                                <td className="product-name">{item.subject}</td>
+                                <td>{item.detail}</td>
+                                <td>{item.owner}</td>
+                                <td><StatusBadge status={item.severity} /></td>
+                                <td><Button size="sm" variant="outline-secondary" onClick={() => setPage(item.relatedPage)}>{item.relatedPage}</Button></td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </Table>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {page === 'Reports' && (
+                <>
+                  <div className="page-row">
+                    <div>
+                      <div className="eyebrow">Insights</div>
+                      <h1 className="page-head">Reports</h1>
+                      <div className="page-sub">Review stock performance, product distribution, and current inventory health.</div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      <Button variant="outline-secondary" onClick={() => downloadCsv('stockwise-products.csv', [['Name', 'SKU', 'Category', 'Price', 'Unit', 'Reorder', ...warehouseList], ...products.map((product) => [product.name, product.sku, product.category, product.price, product.unit, product.reorder, ...warehouseList.map((location) => product.stock?.[location] || 0)])])}>Export products</Button>
+                      <Button variant="success" onClick={() => downloadCsv('stockwise-operations.csv', [['Reference', 'Type', 'Product', 'Qty', 'Location', 'Partner', 'Status', 'Actor', 'Date'], ...docs.map((doc) => [doc.id, doc.type, doc.product, doc.qty, doc.location, doc.partner || '', doc.status, doc.actor || '', doc.date])])}>Export activity</Button>
+                    </div>
+                  </div>
+
+                  <Row className="g-3 mb-4">
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Catalog items</div><div className="kpi-value">{products.length}</div><div className="kpi-foot">Tracked in the current catalog</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Low stock</div><div className="kpi-value">{lowStockProducts.length}</div><div className="kpi-foot">Below your configured alert rule</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Out of stock</div><div className="kpi-value">{outOfStockCount}</div><div className="kpi-foot">Products with no stock available</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Movement records</div><div className="kpi-value">{docs.length}</div><div className="kpi-foot">Current operational activity log</div></Card.Body></Card></Col>
+                  </Row>
+
+                  <div className="section-card" style={{ marginBottom: 16 }}>
+                    <div className="section-head">
+                      <div>
+                        <h2 className="section-heading">Category distribution</h2>
+                        <div className="section-sub">Current stock and catalog count by category</div>
+                      </div>
+                    </div>
+                    <div className="table-responsive">
+                      <Table hover>
+                        <thead>
+                          <tr>
+                            <th>Category</th>
+                            <th>Products</th>
+                            <th>Units on hand</th>
+                            <th>Low stock</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {[...new Set(products.map((product) => product.category))].map((category) => {
+                            const items = products.filter((product) => product.category === category);
+                            return (
+                              <tr key={category}>
+                                <td className="product-name">{category}</td>
+                                <td>{items.length}</td>
+                                <td>{formatNumber(items.reduce((sum, product) => sum + totalStock(product), 0))}</td>
+                                <td>{items.filter((product) => isLowStock(product, settings.alertRule)).length}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </Table>
+                    </div>
+                  </div>
+
+                  <div className="section-card">
+                    <div className="section-head">
+                      <div>
+                        <h2 className="section-heading">Margin guardrails</h2>
+                        <div className="section-sub">Products with the tightest gross margin or stock risk.</div>
+                      </div>
+                    </div>
+                    <div className="table-responsive">
+                      <Table hover>
+                        <thead>
+                          <tr>
+                            <th>Product</th>
+                            <th>Sell price</th>
+                            <th>Gross margin</th>
+                            <th>Units on hand</th>
+                            <th>Units sold</th>
+                            <th>Health</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {marginSignals.length === 0 ? (
+                            <tr><td colSpan="6"><div className="empty-state">No product margin signals are available.</div></td></tr>
+                          ) : (
+                            marginSignals.map((item) => (
+                              <tr key={item.id}>
+                                <td className="product-name">{item.name}</td>
+                                <td>{moneyFormatter.format(item.sellPrice)}</td>
+                                <td>{Math.round(item.marginPercent)}%</td>
+                                <td>{formatNumber(item.unitsOnHand)}</td>
+                                <td>{formatNumber(item.unitsSold)}</td>
+                                <td><StatusBadge status={item.health} /></td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </Table>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {page === 'Billing' && (
+                <>
+                  <div className="page-row">
+                    <div>
+                      <div className="eyebrow">Finance</div>
+                      <h1 className="page-head">Billing</h1>
+                      <div className="page-sub">Track customer invoices and supplier bills connected to your operations.</div>
+                    </div>
+                    <Button variant="success" onClick={() => { setInvoiceForm({ kind: 'Invoice', party: '', amount: '', dueDate: '' }); setModal('invoice'); }}>＋ Add billing record</Button>
+                  </div>
+
+                  <Row className="g-3 mb-4">
+                    <Col sm={6} xl={4}><Card className="kpi-card"><Card.Body><div className="kpi-label">Receivables</div><div className="kpi-value">{new Intl.NumberFormat(undefined, { style: 'currency', currency: settings.currency }).format(invoices.filter((item) => item.kind === 'Invoice' && item.status === 'Unpaid').reduce((sum, item) => sum + item.amount, 0))}</div><div className="kpi-foot">Outstanding customer invoices</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={4}><Card className="kpi-card"><Card.Body><div className="kpi-label">Payables</div><div className="kpi-value">{new Intl.NumberFormat(undefined, { style: 'currency', currency: settings.currency }).format(invoices.filter((item) => item.kind === 'Bill' && item.status === 'Unpaid').reduce((sum, item) => sum + item.amount, 0))}</div><div className="kpi-foot">Outstanding supplier bills</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={4}><Card className="kpi-card"><Card.Body><div className="kpi-label">Collections</div><div className="kpi-value">{new Intl.NumberFormat(undefined, { style: 'currency', currency: settings.currency }).format(payments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0))}</div><div className="kpi-foot">Cash received in the current ledger</div></Card.Body></Card></Col>
+                  </Row>
+
+                  <div className="section-card" style={{ marginBottom: 16 }}>
+                    <div className="section-head">
+                      <div>
+                        <h2 className="section-heading">Collections overview</h2>
+                        <div className="section-sub">Record incoming payments and trace cash against invoice records</div>
+                      </div>
+                      <Button variant="success" onClick={() => { const invoice = invoices.find((item) => item.kind === 'Invoice' && item.status === 'Unpaid'); setPaymentForm({ invoiceId: invoice?.id || '', customer: invoice?.party || '', amount: String(invoice?.amount || '0'), method: 'Bank transfer', date: new Date().toISOString().slice(0, 10) }); setModal('payment'); }}>＋ Record payment</Button>
+                    </div>
+                    <div className="table-responsive">
+                      <Table hover>
+                        <thead>
+                          <tr>
+                            <th>Payment</th>
+                            <th>Invoice</th>
+                            <th>Customer</th>
+                            <th>Amount</th>
+                            <th>Method</th>
+                            <th>Date</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {payments.length === 0 ? (
+                            <tr><td colSpan="6"><div className="empty-state">No payment records have been captured yet.</div></td></tr>
+                          ) : (
+                            payments.map((payment) => (
+                              <tr key={payment.id}>
+                                <td><span className="ref-code">{payment.id}</span></td>
+                                <td>{payment.invoiceId}</td>
+                                <td className="product-name">{payment.customer}</td>
+                                <td>{new Intl.NumberFormat(undefined, { style: 'currency', currency: settings.currency }).format(payment.amount)}</td>
+                                <td>{payment.method}</td>
+                                <td>{payment.date || payment.createdAt}</td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </Table>
+                    </div>
+                  </div>
+
+                  <div className="section-card">
+                    <div className="section-head">
+                      <div>
+                        <h2 className="section-heading">Invoices & bills</h2>
+                        <div className="section-sub">Mark records paid when cash moves or payables are settled</div>
+                      </div>
+                    </div>
+                    <div className="table-responsive">
+                      <Table hover>
+                        <thead>
+                          <tr>
+                            <th>Reference</th>
+                            <th>Type</th>
+                            <th>Party</th>
+                            <th>Due date</th>
+                            <th>Amount</th>
+                            <th>Status</th>
+                            <th>Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {invoices.map((invoice) => (
+                            <tr key={invoice.id}>
+                              <td><span className="ref-code">{invoice.id}</span></td>
+                              <td>{invoice.kind}</td>
+                              <td className="product-name">{invoice.party}</td>
+                              <td>{invoice.dueDate || '—'}</td>
+                              <td>{new Intl.NumberFormat(undefined, { style: 'currency', currency: settings.currency }).format(invoice.amount)}</td>
+                              <td><StatusBadge status={invoice.status} /></td>
+                              <td>
+                                <div style={{ display: 'flex', gap: 6 }}>
+                                  <Button size="sm" variant="outline-secondary" onClick={() => toggleInvoiceStatus(invoice.id)}>{invoice.status === 'Paid' ? 'Mark unpaid' : 'Mark paid'}</Button>
+                                  <Button size="sm" variant="outline-danger" onClick={() => deleteInvoice(invoice)}>Delete</Button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </Table>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {page === 'Settings' && (
+                <>
+                  <div className="page-row">
+                    <div>
+                      <div className="eyebrow">Preferences</div>
+                      <h1 className="page-head">Workspace settings</h1>
+                      <div className="page-sub">Adjust inventory alert rules, defaults, and financial display settings.</div>
+                    </div>
+                  </div>
+
+                  <div className="section-card" style={{ maxWidth: 760 }}>
+                    <div className="section-head">
+                      <div>
+                        <h2 className="section-heading">Operating preferences</h2>
+                        <div className="section-sub">Stored locally in this browser for this demo workspace</div>
+                      </div>
+                    </div>
+                    <div style={{ padding: '0 20px 20px' }}>
+                      <Form>
+                        <Form.Group className="mb-3">
+                          <Form.Label>Low-stock alert rule</Form.Label>
+                          <Form.Select value={settings.alertRule} onChange={(event) => setSettings((current) => ({ ...current, alertRule: event.target.value }))}>
+                            <option>At reorder point</option>
+                            <option>Below reorder point</option>
+                            <option>At 10% below reorder point</option>
+                          </Form.Select>
+                        </Form.Group>
+                        <Form.Group className="mb-3">
+                          <Form.Label>Default unit of measure</Form.Label>
+                          <Form.Select value={settings.defaultUnit} onChange={(event) => setSettings((current) => ({ ...current, defaultUnit: event.target.value }))}>
+                            {unitOptions.map((unit) => <option key={unit} value={unit}>{unit}</option>)}
+                          </Form.Select>
+                        </Form.Group>
+                        <Form.Group>
+                          <Form.Label>Workspace currency</Form.Label>
+                          <Form.Select value={settings.currency} onChange={(event) => setSettings((current) => ({ ...current, currency: event.target.value }))}>
+                            {currencyOptions.map((option) => <option key={option.code} value={option.code}>{option.label}</option>)}
+                          </Form.Select>
+                        </Form.Group>
+                      </Form>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          </main>
+
+          <Modal show={modal === 'operation'} onHide={() => setModal('')} centered>
+            <Form onSubmit={saveOperation}>
+              <Modal.Header closeButton>
+                <Modal.Title>New {operationForm.type.toLowerCase()} operation</Modal.Title>
+              </Modal.Header>
+              <Modal.Body>
+                <Form.Group className="mb-3">
+                  <Form.Label>Product</Form.Label>
+                  <Form.Select value={operationForm.productId} onChange={(event) => setOperationForm({ ...operationForm, productId: event.target.value })}>
+                    {products.map((product) => <option key={product.id} value={product.id}>{product.name} · {product.sku}</option>)}
+                  </Form.Select>
+                </Form.Group>
+                {operationForm.type !== 'Adjustment' ? (
+                  <Form.Group className="mb-3">
+                    <Form.Label>Quantity</Form.Label>
+                    <InputGroup>
+                      <Form.Control type="number" min="0" step="1" value={operationForm.qty} onChange={(event) => setOperationForm({ ...operationForm, qty: event.target.value })} />
+                      <InputGroup.Text>{products.find((product) => product.id === Number(operationForm.productId))?.unit || 'units'}</InputGroup.Text>
+                    </InputGroup>
+                  </Form.Group>
+                ) : (
+                  <Form.Group className="mb-3">
+                    <Form.Label>Counted quantity</Form.Label>
+                    <InputGroup>
+                      <Form.Control type="number" min="0" step="1" value={operationForm.counted} onChange={(event) => setOperationForm({ ...operationForm, counted: event.target.value })} />
+                      <InputGroup.Text>{products.find((product) => product.id === Number(operationForm.productId))?.unit || 'units'}</InputGroup.Text>
+                    </InputGroup>
+                  </Form.Group>
+                )}
+                <Form.Group className="mb-3">
+                  <Form.Label>{operationForm.type === 'Internal' ? 'Source location' : 'Location'}</Form.Label>
+                  <Form.Select value={operationForm.location} onChange={(event) => setOperationForm({ ...operationForm, location: event.target.value })}>
+                    {warehouseList.map((location) => <option key={location} value={location}>{location}</option>)}
+                  </Form.Select>
+                </Form.Group>
+                {operationForm.type === 'Internal' && (
+                  <Form.Group className="mb-3">
+                    <Form.Label>Destination location</Form.Label>
+                    <Form.Select value={operationForm.destination} onChange={(event) => setOperationForm({ ...operationForm, destination: event.target.value })}>
+                      {warehouseList.map((location) => <option key={location} value={location}>{location}</option>)}
+                    </Form.Select>
+                  </Form.Group>
+                )}
+                {(operationForm.type === 'Receipt' || operationForm.type === 'Delivery') && (
+                  <Form.Group>
+                    <Form.Label>{operationForm.type === 'Receipt' ? 'Supplier or vendor' : 'Customer / order reference'}</Form.Label>
+                    <Form.Control value={operationForm.partner} onChange={(event) => setOperationForm({ ...operationForm, partner: event.target.value })} placeholder={operationForm.type === 'Receipt' ? 'Apex Metals Co.' : 'SO-1056'} />
+                  </Form.Group>
+                )}
+              </Modal.Body>
+              <Modal.Footer>
+                <Button variant="light" onClick={() => setModal('')}>Cancel</Button>
+                <Button variant="success" type="submit">Save operation</Button>
+              </Modal.Footer>
+            </Form>
+          </Modal>
+
+          <Modal show={modal === 'product'} onHide={() => setModal('')} centered>
+            <Form onSubmit={saveProduct}>
+              <Modal.Header closeButton>
+                <Modal.Title>{productForm.id ? 'Edit product' : 'Add product'}</Modal.Title>
+              </Modal.Header>
+              <Modal.Body>
+                <Row className="g-3">
+                  <Col xs={12}>
+                    <Form.Label>Product name</Form.Label>
+                    <Form.Control value={productForm.name} onChange={(event) => setProductForm({ ...productForm, name: event.target.value })} placeholder="e.g. Stainless Steel Bolt" />
+                  </Col>
+                  <Col sm={6}>
+                    <Form.Label>SKU</Form.Label>
+                    <Form.Control value={productForm.sku} onChange={(event) => setProductForm({ ...productForm, sku: event.target.value })} placeholder="STL-2041" />
+                  </Col>
+                  <Col sm={6}>
+                    <Form.Label>Category</Form.Label>
+                    <Form.Select value={productForm.category} onChange={(event) => setProductForm({ ...productForm, category: event.target.value })}>
+                      {['Raw Materials', 'Furniture', 'Safety', 'Packaging', 'Electrical', 'Finished Goods', 'Other'].map((category) => <option key={category}>{category}</option>)}
+                    </Form.Select>
+                  </Col>
+                  <Col sm={6}>
+                    <Form.Label>Material</Form.Label>
+                    <Form.Control value={productForm.material} onChange={(event) => setProductForm({ ...productForm, material: event.target.value })} placeholder="Steel, aluminum, etc." />
+                  </Col>
+                  <Col sm={6}>
+                    <Form.Label>Unit price ({settings.currency})</Form.Label>
+                    <Form.Control type="number" min="0" step="0.01" value={productForm.price} onChange={(event) => setProductForm({ ...productForm, price: event.target.value })} />
+                  </Col>
+                  <Col sm={6}>
+                    <Form.Label>Unit</Form.Label>
+                    <Form.Control list="unit-options" value={productForm.unit} onChange={(event) => setProductForm({ ...productForm, unit: event.target.value })} />
+                    <datalist id="unit-options">{unitOptions.map((unit) => <option key={unit} value={unit} />)}</datalist>
+                  </Col>
+                  <Col sm={6}>
+                    <Form.Label>Reorder point</Form.Label>
+                    <Form.Control type="number" min="0" step="1" value={productForm.reorder} onChange={(event) => setProductForm({ ...productForm, reorder: event.target.value })} />
+                  </Col>
+                  {warehouseList.map((location) => (
+                    <Col key={location} sm={6}>
+                      <Form.Label>{location}</Form.Label>
+                      <Form.Control type="number" min="0" step="1" value={productForm.stock?.[location] ?? 0} onChange={(event) => setProductForm({
+                        ...productForm,
+                        stock: { ...productForm.stock, [location]: event.target.value },
+                      })} />
+                    </Col>
+                  ))}
+                </Row>
+              </Modal.Body>
+              <Modal.Footer>
+                <Button variant="light" onClick={() => setModal('')}>Cancel</Button>
+                <Button variant="success" type="submit">{productForm.id ? 'Update product' : 'Save product'}</Button>
+              </Modal.Footer>
+            </Form>
+          </Modal>
+
+          <Modal show={modal === 'invoice'} onHide={() => setModal('')} centered>
+            <Form onSubmit={saveInvoice}>
+              <Modal.Header closeButton>
+                <Modal.Title>Add billing record</Modal.Title>
+              </Modal.Header>
+              <Modal.Body>
+                <Row className="g-3">
+                  <Col sm={6}>
+                    <Form.Label>Type</Form.Label>
+                    <Form.Select value={invoiceForm.kind} onChange={(event) => setInvoiceForm({ ...invoiceForm, kind: event.target.value })}>
+                      <option>Invoice</option>
+                      <option>Bill</option>
+                    </Form.Select>
+                  </Col>
+                  <Col sm={6}>
+                    <Form.Label>Amount ({settings.currency})</Form.Label>
+                    <Form.Control type="number" min="0.01" step="0.01" value={invoiceForm.amount} onChange={(event) => setInvoiceForm({ ...invoiceForm, amount: event.target.value })} />
+                  </Col>
+                  <Col xs={12}>
+                    <Form.Label>Customer / supplier</Form.Label>
+                    <Form.Control value={invoiceForm.party} onChange={(event) => setInvoiceForm({ ...invoiceForm, party: event.target.value })} placeholder="Northstar Retail" />
+                  </Col>
+                  <Col xs={12}>
+                    <Form.Label>Due date</Form.Label>
+                    <Form.Control type="date" value={invoiceForm.dueDate} onChange={(event) => setInvoiceForm({ ...invoiceForm, dueDate: event.target.value })} />
+                  </Col>
+                </Row>
+              </Modal.Body>
+              <Modal.Footer>
+                <Button variant="light" onClick={() => setModal('')}>Cancel</Button>
+                <Button variant="success" type="submit">Save record</Button>
+              </Modal.Footer>
+            </Form>
+          </Modal>
+
+          <Modal show={modal === 'payment'} onHide={() => setModal('')} centered>
+            <Form onSubmit={recordPayment}>
+              <Modal.Header closeButton>
+                <Modal.Title>Record payment</Modal.Title>
+              </Modal.Header>
+              <Modal.Body>
+                <Row className="g-3">
+                  <Col xs={12}>
+                    <Form.Label>Invoice</Form.Label>
+                    <Form.Select value={paymentForm.invoiceId} onChange={(event) => {
+                      const selectedInvoice = invoices.find((entry) => String(entry.id) === String(event.target.value));
+                      const totalReceived = payments
+                        .filter((entry) => String(entry.invoiceId) === String(selectedInvoice?.id || ''))
+                        .reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
+                      const outstanding = selectedInvoice ? Math.max(Number(selectedInvoice.amount || 0) - totalReceived, 0) : 0;
+                      setPaymentForm({
+                        ...paymentForm,
+                        invoiceId: event.target.value,
+                        customer: selectedInvoice?.party || paymentForm.customer,
+                        amount: selectedInvoice ? String(outstanding) : '0',
+                      });
+                    }}>
+                      <option value="">Select invoice</option>
+                      {invoices.filter((entry) => entry.kind === 'Invoice' && entry.status !== 'Paid').map((entry) => (
+                        <option key={entry.id} value={entry.id}>{entry.id} · {entry.party}</option>
+                      ))}
+                    </Form.Select>
+                  </Col>
+                  <Col sm={6}>
+                    <Form.Label>Customer</Form.Label>
+                    <Form.Control value={paymentForm.customer} onChange={(event) => setPaymentForm({ ...paymentForm, customer: event.target.value })} placeholder="Northstar Retail" />
+                  </Col>
+                  <Col sm={6}>
+                    <Form.Label>Amount ({settings.currency})</Form.Label>
+                    <Form.Control type="number" min="0.01" step="0.01" value={paymentForm.amount} onChange={(event) => setPaymentForm({ ...paymentForm, amount: event.target.value })} />
+                  </Col>
+                  <Col sm={6}>
+                    <Form.Label>Method</Form.Label>
+                    <Form.Select value={paymentForm.method} onChange={(event) => setPaymentForm({ ...paymentForm, method: event.target.value })}>
+                      <option>Bank transfer</option>
+                      <option>Cash</option>
+                      <option>Card</option>
+                      <option>Cheque</option>
+                      <option>Wire</option>
+                    </Form.Select>
+                  </Col>
+                  <Col sm={6}>
+                    <Form.Label>Date</Form.Label>
+                    <Form.Control type="date" value={paymentForm.date} onChange={(event) => setPaymentForm({ ...paymentForm, date: event.target.value })} />
+                  </Col>
+                </Row>
+              </Modal.Body>
+              <Modal.Footer>
+                <Button variant="light" onClick={() => setModal('')}>Cancel</Button>
+                <Button variant="success" type="submit">Record payment</Button>
+              </Modal.Footer>
+            </Form>
+          </Modal>
+
+          <Modal show={modal === 'supplier'} onHide={() => setModal('')} centered>
+            <Form onSubmit={saveSupplier}>
+              <Modal.Header closeButton>
+                <Modal.Title>Add supplier</Modal.Title>
+              </Modal.Header>
+              <Modal.Body>
+                <Row className="g-3">
+                  <Col xs={12}><Form.Label>Supplier name</Form.Label><Form.Control value={supplierForm.name} onChange={(event) => setSupplierForm({ ...supplierForm, name: event.target.value })} placeholder="Apex Materials Ltd." /></Col>
+                  <Col sm={6}><Form.Label>Contact</Form.Label><Form.Control value={supplierForm.contact} onChange={(event) => setSupplierForm({ ...supplierForm, contact: event.target.value })} placeholder="Nina Gomez" /></Col>
+                  <Col sm={6}><Form.Label>Category</Form.Label><Form.Select value={supplierForm.category} onChange={(event) => setSupplierForm({ ...supplierForm, category: event.target.value })}><option>General</option><option>Packaging</option><option>Raw Materials</option><option>Safety</option><option>Logistics</option></Form.Select></Col>
+                  <Col sm={6}><Form.Label>Email</Form.Label><Form.Control type="email" value={supplierForm.email} onChange={(event) => setSupplierForm({ ...supplierForm, email: event.target.value })} placeholder="nina@apex.com" /></Col>
+                  <Col sm={6}><Form.Label>Phone</Form.Label><Form.Control value={supplierForm.phone} onChange={(event) => setSupplierForm({ ...supplierForm, phone: event.target.value })} placeholder="+1 555 210 9000" /></Col>
+                  <Col sm={6}><Form.Label>Average lead time (days)</Form.Label><Form.Control type="number" min="1" step="1" value={supplierForm.leadTime} onChange={(event) => setSupplierForm({ ...supplierForm, leadTime: event.target.value })} /></Col>
+                  <Col sm={6}><Form.Label>SLA target (%)</Form.Label><Form.Control type="number" min="70" max="100" step="1" value={supplierForm.slaTarget} onChange={(event) => setSupplierForm({ ...supplierForm, slaTarget: event.target.value })} /></Col>
+                </Row>
+              </Modal.Body>
+              <Modal.Footer>
+                <Button variant="light" onClick={() => setModal('')}>Cancel</Button>
+                <Button variant="success" type="submit">Save supplier</Button>
+              </Modal.Footer>
+            </Form>
+          </Modal>
+
+          <Modal show={modal === 'purchase'} onHide={() => setModal('')} centered>
+            <Form onSubmit={savePurchaseOrder}>
+              <Modal.Header closeButton>
+                <Modal.Title>Create purchase order</Modal.Title>
+              </Modal.Header>
+              <Modal.Body>
+                <Row className="g-3">
+                  <Col sm={6}>
+                    <Form.Label>Supplier</Form.Label>
+                    <Form.Select value={purchaseForm.supplierId} onChange={(event) => setPurchaseForm({ ...purchaseForm, supplierId: event.target.value })}>
+                      <option value="">Select supplier</option>
+                      {suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}
+                    </Form.Select>
+                  </Col>
+                  <Col sm={6}>
+                    <Form.Label>Product</Form.Label>
+                    <Form.Select value={purchaseForm.productId} onChange={(event) => setPurchaseForm({ ...purchaseForm, productId: event.target.value })}>
+                      <option value="">Select product</option>
+                      {products.map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}
+                    </Form.Select>
+                  </Col>
+                  <Col sm={4}>
+                    <Form.Label>Qty</Form.Label>
+                    <Form.Control type="number" min="1" value={purchaseForm.qty} onChange={(event) => setPurchaseForm({ ...purchaseForm, qty: event.target.value })} />
+                  </Col>
+                  <Col sm={4}>
+                    <Form.Label>Unit cost</Form.Label>
+                    <Form.Control type="number" min="0" step="0.01" value={purchaseForm.unitCost} onChange={(event) => setPurchaseForm({ ...purchaseForm, unitCost: event.target.value })} />
+                  </Col>
+                  <Col sm={4}>
+                    <Form.Label>Status</Form.Label>
+                    <Form.Select value={purchaseForm.status} onChange={(event) => setPurchaseForm({ ...purchaseForm, status: event.target.value })}>
+                      <option>Draft</option>
+                      <option>Approved</option>
+                      <option>Ordered</option>
+                    </Form.Select>
+                  </Col>
+                  <Col sm={6}>
+                    <Form.Label>Expected date</Form.Label>
+                    <Form.Control type="date" value={purchaseForm.expectedDate} onChange={(event) => setPurchaseForm({ ...purchaseForm, expectedDate: event.target.value })} />
+                  </Col>
+                  <Col sm={6}>
+                    <Form.Label>Delivery location</Form.Label>
+                    <Form.Select value={purchaseForm.location} onChange={(event) => setPurchaseForm({ ...purchaseForm, location: event.target.value })}>
+                      {warehouseList.map((location) => <option key={location} value={location}>{location}</option>)}
+                    </Form.Select>
+                  </Col>
+                </Row>
+              </Modal.Body>
+              <Modal.Footer>
+                <Button variant="light" onClick={() => setModal('')}>Cancel</Button>
+                <Button variant="success" type="submit">Save order</Button>
+              </Modal.Footer>
+            </Form>
+          </Modal>
+
+          <Modal show={modal === 'customer'} onHide={() => setModal('')} centered>
+            <Form onSubmit={saveCustomer}>
+              <Modal.Header closeButton>
+                <Modal.Title>Add customer</Modal.Title>
+              </Modal.Header>
+              <Modal.Body>
+                <Row className="g-3">
+                  <Col xs={12}><Form.Label>Customer name</Form.Label><Form.Control value={customerForm.name} onChange={(event) => setCustomerForm({ ...customerForm, name: event.target.value })} placeholder="Northstar Retail" /></Col>
+                  <Col sm={6}><Form.Label>Email</Form.Label><Form.Control type="email" value={customerForm.email} onChange={(event) => setCustomerForm({ ...customerForm, email: event.target.value })} placeholder="hello@northstar.co" /></Col>
+                  <Col sm={6}><Form.Label>Phone</Form.Label><Form.Control value={customerForm.phone} onChange={(event) => setCustomerForm({ ...customerForm, phone: event.target.value })} placeholder="+1 555 017 4590" /></Col>
+                  <Col sm={6}><Form.Label>Tier</Form.Label><Form.Select value={customerForm.tier} onChange={(event) => setCustomerForm({ ...customerForm, tier: event.target.value })}><option>Standard</option><option>Priority</option><option>VIP</option></Form.Select></Col>
+                  <Col sm={6}><Form.Label>Region</Form.Label><Form.Select value={customerForm.region} onChange={(event) => setCustomerForm({ ...customerForm, region: event.target.value })}><option>North</option><option>South</option><option>East</option><option>West</option></Form.Select></Col>
+                </Row>
+              </Modal.Body>
+              <Modal.Footer>
+                <Button variant="light" onClick={() => setModal('')}>Cancel</Button>
+                <Button variant="success" type="submit">Save customer</Button>
+              </Modal.Footer>
+            </Form>
+          </Modal>
+
+          <Modal show={modal === 'sales'} onHide={() => setModal('')} centered>
+            <Form onSubmit={saveSalesOrder}>
+              <Modal.Header closeButton>
+                <Modal.Title>Create sales order</Modal.Title>
+              </Modal.Header>
+              <Modal.Body>
+                <Row className="g-3">
+                  <Col sm={6}>
+                    <Form.Label>Customer</Form.Label>
+                    <Form.Select value={salesForm.customerId} onChange={(event) => setSalesForm({ ...salesForm, customerId: event.target.value })}>
+                      <option value="">Select customer</option>
+                      {customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.name}</option>)}
+                    </Form.Select>
+                  </Col>
+                  <Col sm={6}>
+                    <Form.Label>Product</Form.Label>
+                    <Form.Select value={salesForm.productId} onChange={(event) => setSalesForm({ ...salesForm, productId: event.target.value })}>
+                      <option value="">Select product</option>
+                      {products.map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}
+                    </Form.Select>
+                  </Col>
+                  <Col sm={4}>
+                    <Form.Label>Qty</Form.Label>
+                    <Form.Control type="number" min="1" value={salesForm.qty} onChange={(event) => setSalesForm({ ...salesForm, qty: event.target.value })} />
+                  </Col>
+                  <Col sm={4}>
+                    <Form.Label>Unit price</Form.Label>
+                    <Form.Control type="number" min="0" step="0.01" value={salesForm.unitPrice} onChange={(event) => setSalesForm({ ...salesForm, unitPrice: event.target.value })} />
+                  </Col>
+                  <Col sm={4}>
+                    <Form.Label>Status</Form.Label>
+                    <Form.Select value={salesForm.status} onChange={(event) => setSalesForm({ ...salesForm, status: event.target.value })}>
+                      <option>Draft</option>
+                      <option>Confirmed</option>
+                      <option>Shipped</option>
+                    </Form.Select>
+                  </Col>
+                  <Col sm={6}>
+                    <Form.Label>Location</Form.Label>
+                    <Form.Select value={salesForm.location} onChange={(event) => setSalesForm({ ...salesForm, location: event.target.value })}>
+                      {warehouseList.map((location) => <option key={location} value={location}>{location}</option>)}
+                    </Form.Select>
+                  </Col>
+                  <Col sm={6}>
+                    <Form.Label>Expected date</Form.Label>
+                    <Form.Control type="date" value={salesForm.expectedDate} onChange={(event) => setSalesForm({ ...salesForm, expectedDate: event.target.value })} />
+                  </Col>
+                </Row>
+              </Modal.Body>
+              <Modal.Footer>
+                <Button variant="light" onClick={() => setModal('')}>Cancel</Button>
+                <Button variant="success" type="submit">Save order</Button>
+              </Modal.Footer>
+            </Form>
+          </Modal>
+
+          <Modal show={modal === 'shipment'} onHide={() => setModal('')} centered>
+            <Form onSubmit={saveShipment}>
+              <Modal.Header closeButton>
+                <Modal.Title>Create shipment</Modal.Title>
+              </Modal.Header>
+              <Modal.Body>
+                <Row className="g-3">
+                  <Col sm={6}>
+                    <Form.Label>Sales order</Form.Label>
+                    <Form.Select value={shipmentForm.orderId} onChange={(event) => setShipmentForm({ ...shipmentForm, orderId: event.target.value })}>
+                      <option value="">Select order</option>
+                      {salesOrders.map((order) => <option key={order.id} value={order.id}>{order.id}</option>)}
+                    </Form.Select>
+                  </Col>
+                  <Col sm={6}>
+                    <Form.Label>Carrier</Form.Label>
+                    <Form.Select value={shipmentForm.carrier} onChange={(event) => setShipmentForm({ ...shipmentForm, carrier: event.target.value })}>
+                      <option>UPS</option>
+                      <option>FedEx</option>
+                      <option>DHL</option>
+                      <option>Local courier</option>
+                    </Form.Select>
+                  </Col>
+                  <Col sm={6}>
+                    <Form.Label>Tracking</Form.Label>
+                    <Form.Control value={shipmentForm.tracking} onChange={(event) => setShipmentForm({ ...shipmentForm, tracking: event.target.value })} placeholder="TRACK-12345" />
+                  </Col>
+                  <Col sm={6}>
+                    <Form.Label>Status</Form.Label>
+                    <Form.Select value={shipmentForm.status} onChange={(event) => setShipmentForm({ ...shipmentForm, status: event.target.value })}>
+                      <option>Ready</option>
+                      <option>In Transit</option>
+                      <option>Delivered</option>
+                    </Form.Select>
+                  </Col>
+                  <Col sm={12}>
+                    <Form.Label>Warehouse</Form.Label>
+                    <Form.Select value={shipmentForm.location} onChange={(event) => setShipmentForm({ ...shipmentForm, location: event.target.value })}>
+                      {warehouseList.map((location) => <option key={location} value={location}>{location}</option>)}
+                    </Form.Select>
+                  </Col>
+                </Row>
+              </Modal.Body>
+              <Modal.Footer>
+                <Button variant="light" onClick={() => setModal('')}>Cancel</Button>
+                <Button variant="success" type="submit">Create shipment</Button>
+              </Modal.Footer>
+            </Form>
+          </Modal>
+
+          <Modal show={modal === 'return'} onHide={() => setModal('')} centered>
+            <Form onSubmit={saveReturn}>
+              <Modal.Header closeButton>
+                <Modal.Title>Process return</Modal.Title>
+              </Modal.Header>
+              <Modal.Body>
+                <Row className="g-3">
+                  <Col sm={6}>
+                    <Form.Label>Order</Form.Label>
+                    <Form.Select value={returnForm.orderId} onChange={(event) => {
+                      const selectedOrder = salesOrders.find((order) => String(order.id) === String(event.target.value));
+                      setReturnForm({
+                        ...returnForm,
+                        orderId: event.target.value,
+                        customerId: selectedOrder?.customerId || returnForm.customerId,
+                        productId: selectedOrder?.productId || returnForm.productId,
+                        qty: String(selectedOrder?.qty || returnForm.qty || '1'),
+                        location: selectedOrder?.location || returnForm.location,
+                      });
+                    }}>
+                      <option value="">Select order</option>
+                      {salesOrders.map((order) => <option key={order.id} value={order.id}>{order.id}</option>)}
+                    </Form.Select>
+                  </Col>
+                  <Col sm={6}>
+                    <Form.Label>Customer</Form.Label>
+                    <Form.Select value={returnForm.customerId} onChange={(event) => setReturnForm({ ...returnForm, customerId: event.target.value })}>
+                      <option value="">Select customer</option>
+                      {customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.name}</option>)}
+                    </Form.Select>
+                  </Col>
+                  <Col sm={6}>
+                    <Form.Label>Product</Form.Label>
+                    <Form.Select value={returnForm.productId} onChange={(event) => setReturnForm({ ...returnForm, productId: event.target.value })}>
+                      <option value="">Select product</option>
+                      {products.map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}
+                    </Form.Select>
+                  </Col>
+                  <Col sm={6}>
+                    <Form.Label>Return reason</Form.Label>
+                    <Form.Select value={returnForm.reason} onChange={(event) => setReturnForm({ ...returnForm, reason: event.target.value })}>
+                      <option>Damaged</option>
+                      <option>Late delivery</option>
+                      <option>Wrong item</option>
+                      <option>Customer cancellation</option>
+                      <option>Quality issue</option>
+                    </Form.Select>
+                  </Col>
+                  <Col sm={6}>
+                    <Form.Label>Qty</Form.Label>
+                    <Form.Control type="number" min="1" value={returnForm.qty} onChange={(event) => setReturnForm({ ...returnForm, qty: event.target.value })} />
+                  </Col>
+                  <Col sm={6}>
+                    <Form.Label>Location</Form.Label>
+                    <Form.Select value={returnForm.location} onChange={(event) => setReturnForm({ ...returnForm, location: event.target.value })}>
+                      {warehouseList.map((location) => <option key={location} value={location}>{location}</option>)}
+                    </Form.Select>
+                  </Col>
+                </Row>
+              </Modal.Body>
+              <Modal.Footer>
+                <Button variant="light" onClick={() => setModal('')}>Cancel</Button>
+                <Button variant="success" type="submit">Save return</Button>
+              </Modal.Footer>
+            </Form>
+          </Modal>
+
+          <Modal show={modal === 'warehouse'} onHide={() => setModal('')} centered>
+            <Form onSubmit={saveWarehouse}>
+              <Modal.Header closeButton>
+                <Modal.Title>Add location</Modal.Title>
+              </Modal.Header>
+              <Modal.Body>
+                <Form.Group>
+                  <Form.Label>Warehouse or location name</Form.Label>
+                  <Form.Control value={warehouseForm.name} onChange={(event) => setWarehouseForm({ name: event.target.value })} placeholder="e.g. East Distribution Hub" />
+                </Form.Group>
+              </Modal.Body>
+              <Modal.Footer>
+                <Button variant="light" onClick={() => setModal('')}>Cancel</Button>
+                <Button variant="success" type="submit">Add location</Button>
+              </Modal.Footer>
+            </Form>
+          </Modal>
+
+          <Modal show={modal === 'rename'} onHide={() => setModal('')} centered>
+            <Modal.Header closeButton>
+              <Modal.Title>Rename location</Modal.Title>
+            </Modal.Header>
+            <Modal.Body>
+              <Form.Group>
+                <Form.Label>New name for {renameTarget}</Form.Label>
+                <Form.Control value={renameValue} onChange={(event) => setRenameValue(event.target.value)} placeholder="Enter new location name" />
+              </Form.Group>
+            </Modal.Body>
+            <Modal.Footer>
+              <Button variant="light" onClick={() => setModal('')}>Cancel</Button>
+              <Button variant="success" onClick={renameWarehouse}>Save rename</Button>
+            </Modal.Footer>
+          </Modal>
+
+          <Modal show={modal === 'import'} onHide={() => setModal('')} centered>
+            <Modal.Header closeButton>
+              <Modal.Title>Import product data</Modal.Title>
+            </Modal.Header>
+            <Modal.Body>
+              <p style={{ marginTop: 0, color: '#60768d', fontSize: 12 }}>
+                Import CSV, TSV, TXT tables, or JSON lists. The demo stores data locally in this browser and skips duplicate SKUs.
+              </p>
+              <Form.Control type="file" accept=".csv,.tsv,.txt,.json" multiple onChange={(event) => { previewImport(event.target.files); event.target.value = ''; }} />
+              {importMessage && <div className="inventory-alert" style={{ marginTop: 14 }}>{importMessage}</div>}
+              {importPreview.length > 0 && (
+                <div style={{ marginTop: 12 }}>
+                  <strong style={{ fontSize: 12 }}>Preview</strong>
+                  <div className="table-responsive" style={{ maxHeight: 220, marginTop: 8 }}>
+                    <Table size="sm">
+                      <thead>
+                        <tr>
+                          <th>Name</th>
+                          <th>SKU</th>
+                          <th>Qty</th>
+                          <th>Price</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {importPreview.slice(0, 8).map((item, index) => (
+                          <tr key={`${item.sku}-${index}`}>
+                            <td>{item.name}</td>
+                            <td>{item.sku}</td>
+                            <td>{item.quantity}</td>
+                            <td>{new Intl.NumberFormat(undefined, { style: 'currency', currency: settings.currency }).format(item.price)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </Table>
+                  </div>
+                </div>
+              )}
+            </Modal.Body>
+            <Modal.Footer>
+              <Button variant="light" onClick={() => setModal('')}>Cancel</Button>
+              <Button variant="success" onClick={commitImport} disabled={!importPreview.length}>Import rows</Button>
+            </Modal.Footer>
+          </Modal>
+
+          {confirmState && (
+            <Modal show onHide={() => setConfirmState(null)} centered>
+              <Modal.Header closeButton>
+                <Modal.Title>{confirmState.title}</Modal.Title>
+              </Modal.Header>
+              <Modal.Body>
+                <p style={{ margin: 0, color: '#425a74', fontSize: 13 }}>{confirmState.body}</p>
+              </Modal.Body>
+              <Modal.Footer>
+                <Button variant="light" onClick={() => setConfirmState(null)}>Cancel</Button>
+                <Button variant={confirmState.variant === 'danger' ? 'danger' : 'success'} onClick={confirmState.onConfirm}>{confirmState.confirmLabel}</Button>
+              </Modal.Footer>
+            </Modal>
+          )}
+
+          {toast && <div className="toast-message" role="status" aria-live="polite">✓ {toast}</div>}
+        </div>
+      )}
+    </>
+  );
+}

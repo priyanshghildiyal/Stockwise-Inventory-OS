@@ -1,8 +1,16 @@
 import React from 'react';
 import 'bootstrap/dist/css/bootstrap.min.css';
-import { sanitizeStoredArray } from './storage.js';
+import './login.css';
+import { readLocal, writeLocal, removeLocal, readSession, writeSession, removeSession, sanitizeStoredArray } from './storage.js';
+import { applyInventoryOperation } from './domain.js';
+import { deductShipmentStock, getShipmentBlockReason } from './services/orders.js';
+import { getInvoiceOutstanding, getPaymentValidationError } from './services/billing.js';
+import { validateLoginCredentials } from './services/auth.js';
+import { parseProductImportText } from './services/productImport.js';
+import OperationsTable from './components/OperationsTable.jsx';
+import StatusBadge from './components/StatusBadge.jsx';
+import './styles/design-tokens.css';
 import {
-  Badge,
   Button,
   Card,
   Col,
@@ -63,83 +71,38 @@ const legacyDemoNames = new Set([
 
 const legacyDemoIds = new Set(['RCV-24018', 'OUT-24009', 'INT-24006', 'ADJ-24002', 'INV-1042', 'BILL-0087', 'INV-1038']);
 
-const readSaved = (key, fallback) => {
-  try {
-    const raw = window.localStorage.getItem(key);
-    if (raw === null) return fallback;
-    return JSON.parse(raw);
-  } catch {
-    return fallback;
-  }
-};
-
-const writeSaved = (key, value) => {
-  try {
-    window.localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    // Ignore storage failures gracefully.
-  }
-};
-
-const removeSaved = (key) => {
-  try {
-    window.localStorage.removeItem(key);
-  } catch {
-    // Ignore removal failures gracefully.
-  }
-};
+const readSaved = readLocal;
+const writeSaved = writeLocal;
+const removeSaved = removeLocal;
 
 const totalStock = (product) => Object.values(product?.stock || {}).reduce((sum, value) => sum + (Number(value) || 0), 0);
 const formatNumber = (value) => Number(value || 0).toLocaleString();
-const parseDelimited = (text, delimiter = ',') => {
-  const rows = [];
-  let current = [];
-  let value = '';
-  let inQuotes = false;
-  const chars = text.replace(/^\uFEFF/, '').split('');
-
-  for (let index = 0; index < chars.length; index += 1) {
-    const char = chars[index];
-    if (char === '"') {
-      if (inQuotes && chars[index + 1] === '"') {
-        value += '"';
-        index += 1;
-      } else {
-        inQuotes = !inQuotes;
-      }
-      continue;
-    }
-
-    if (char === delimiter && !inQuotes) {
-      current.push(value.trim());
-      value = '';
-      continue;
-    }
-
-    if ((char === '\n' || char === '\r') && !inQuotes) {
-      if (char === '\r' && chars[index + 1] === '\n') {
-        index += 1;
-      }
-      current.push(value.trim());
-      if (current.some((entry) => entry !== '')) {
-        rows.push(current);
-      }
-      current = [];
-      value = '';
-      continue;
-    }
-
-    value += char;
-  }
-
-  current.push(value.trim());
-  if (current.some((entry) => entry !== '')) {
-    rows.push(current);
-  }
-
-  return rows;
+const mostCommonValue = (values) => {
+  const counts = values.reduce((result, value) => {
+    if (value) result[value] = (result[value] || 0) + 1;
+    return result;
+  }, {});
+  return Object.entries(counts).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] || '';
 };
+const getRecentSalesDemand = (orders, productName, now = Date.now()) => {
+  const fulfilledOrders = orders.filter((order) => (
+    order.productName === productName && ['Confirmed', 'Shipped'].includes(order.status)
+  ));
+  const hasUndatedOrders = fulfilledOrders.some((order) => (
+    typeof order.createdAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T/.test(order.createdAt) || !Number.isFinite(Date.parse(order.createdAt))
+  ));
+  const cutoff = now - (30 * 86400000);
+  const recentOrders = fulfilledOrders.filter((order) => {
+    const timestamp = Date.parse(order.createdAt);
+    return Number.isFinite(timestamp) && timestamp >= cutoff && timestamp <= now;
+  });
 
+  return {
+    units: hasUndatedOrders ? null : recentOrders.reduce((sum, order) => sum + Number(order.qty || 0), 0),
+    orderCount: recentOrders.length,
+    hasUndatedOrders,
+  };
+};
 const downloadCsv = (filename, rows) => {
   const csv = rows
     .map((row) => row.map((cell) => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(','))
@@ -161,27 +124,6 @@ const isLowStock = (product, thresholdRule = 'At reorder point') => {
   return qty <= reorder;
 };
 
-const statusClassMap = {
-  Done: 'status-done',
-  Ready: 'status-ready',
-  Waiting: 'status-waiting',
-  Scheduled: 'status-scheduled',
-  Canceled: 'status-canceled',
-  Draft: 'status-draft',
-  'Out of stock': 'status-canceled',
-  'Low stock': 'status-waiting',
-  Healthy: 'status-done',
-  Pending: 'status-waiting',
-  Approved: 'status-ready',
-  Returned: 'status-done',
-  Processing: 'status-scheduled',
-  Open: 'status-draft',
-  Critical: 'status-canceled',
-  Watch: 'status-waiting',
-  Stable: 'status-done',
-  Excess: 'status-scheduled',
-};
-
 function BrandLogo({ compact = false }) {
   return (
     <div className={`stockwise-brand ${compact ? 'stockwise-brand-compact' : ''}`} aria-label="Stockwise">
@@ -195,10 +137,6 @@ function BrandLogo({ compact = false }) {
       <span className="stockwise-wordmark">Stockwise</span>
     </div>
   );
-}
-
-function StatusBadge({ status }) {
-  return <Badge className={`badge-soft ${statusClassMap[status] || 'status-draft'}`}>{status}</Badge>;
 }
 
 function Feature({ icon, title, text }) {
@@ -299,85 +237,6 @@ function SecurityIcon() {
   );
 }
 
-function OperationsTable({ docs, warehouseList, search, setSearch, typeFilter, setTypeFilter, statusFilter, setStatusFilter, locationFilter, setLocationFilter, ledger = false }) {
-  return (
-    <div className="section-card">
-      <div className="section-head section-head-wrap">
-        <div>
-          <h2 className="section-heading">{ledger ? 'Stock ledger' : 'Operational history'} <span className="soft-count">({docs.length})</span></h2>
-          <div className="section-sub">{ledger ? 'Every stock movement, count, and status update.' : 'Recent warehouse activity and record updates.'}</div>
-        </div>
-        <div className="toolbar toolbar-wrap">
-          <InputGroup className="search-box">
-            <InputGroup.Text className="input-glyph">⌕</InputGroup.Text>
-            <Form.Control value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search reference or product" />
-          </InputGroup>
-          {ledger && (
-            <Form.Select className="filter-select" value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}>
-              <option value="All">All types</option>
-              <option value="Receipt">Receipt</option>
-              <option value="Delivery">Delivery</option>
-              <option value="Internal">Internal</option>
-              <option value="Adjustment">Adjustment</option>
-            </Form.Select>
-          )}
-          <Form.Select className="filter-select" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
-            <option value="All">All statuses</option>
-            <option value="Draft">Draft</option>
-            <option value="Waiting">Waiting</option>
-            <option value="Ready">Ready</option>
-            <option value="Scheduled">Scheduled</option>
-            <option value="Done">Done</option>
-            <option value="Canceled">Canceled</option>
-          </Form.Select>
-          <Form.Select className="filter-select" value={locationFilter} onChange={(event) => setLocationFilter(event.target.value)}>
-            <option value="All">All locations</option>
-            {warehouseList.map((location) => <option key={location} value={location}>{location}</option>)}
-          </Form.Select>
-        </div>
-      </div>
-      <div className="table-responsive">
-        <Table hover>
-          <thead>
-            <tr>
-              <th>Reference</th>
-              <th>Type</th>
-              <th>Product</th>
-              <th>Qty</th>
-              <th>{ledger ? 'Partner / movement' : 'Location'}</th>
-              <th>Recorded by</th>
-              <th>Status</th>
-              <th>Date</th>
-            </tr>
-          </thead>
-          <tbody>
-            {docs.length === 0 ? (
-              <tr>
-                <td colSpan="8">
-                  <div className="empty-state">No movement records match the current filters.</div>
-                </td>
-              </tr>
-            ) : (
-              docs.map((doc) => (
-                <tr key={`${doc.id}-${doc.type}`}>
-                  <td><strong className="ref-code">{doc.id}</strong></td>
-                  <td>{doc.type}</td>
-                  <td><span className="product-name">{doc.product}</span></td>
-                  <td>{doc.type === 'Receipt' ? '+' : doc.type === 'Delivery' ? '−' : doc.type === 'Internal' ? '⇄' : '±'} {formatNumber(doc.qty)}</td>
-                  <td>{doc.partner || doc.location}</td>
-                  <td>{doc.actor || 'System'}</td>
-                  <td><StatusBadge status={doc.status} /></td>
-                  <td>{doc.date}</td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </Table>
-      </div>
-    </div>
-  );
-}
-
 export default function App() {
   const [products, setProducts] = React.useState(() => {
     const saved = readSaved('stockwise-products', initialProducts);
@@ -437,16 +296,9 @@ export default function App() {
       currency: currencyOptions.some((item) => item.code === saved?.currency) ? saved.currency : 'USD',
     };
   });
-  const getStoredSession = () => {
-    const localSession = readSaved('stockwise-session', false);
-    if (localSession) return localSession;
-    try {
-      const sessionOnly = window.sessionStorage.getItem('stockwise-session');
-      return sessionOnly ? JSON.parse(sessionOnly) : false;
-    } catch {
-      return false;
-    }
-  };
+  const getStoredSession = () => (
+    readSaved('stockwise-session', false) || readSession('stockwise-session', false)
+  );
 
   const [authenticated, setAuthenticated] = React.useState(() => getStoredSession());
   const [themeMode, setThemeMode] = React.useState(() => {
@@ -458,6 +310,7 @@ export default function App() {
   const [authMode, setAuthMode] = React.useState('login');
   const [loginForm, setLoginForm] = React.useState({ name: '', email: '', password: '', confirmPassword: '', role: 'Operations Manager' });
   const [loginError, setLoginError] = React.useState('');
+  const [loginFieldErrors, setLoginFieldErrors] = React.useState({});
   const [showPassword, setShowPassword] = React.useState(false);
   const [remember, setRemember] = React.useState(() => readSaved('stockwise-remember', true));
   const [loading, setLoading] = React.useState(false);
@@ -479,11 +332,13 @@ export default function App() {
   const [isOnline, setIsOnline] = React.useState(() => navigator.onLine);
   const [importPreview, setImportPreview] = React.useState([]);
   const [importMessage, setImportMessage] = React.useState('');
+  const [importErrors, setImportErrors] = React.useState([]);
   const [productForm, setProductForm] = React.useState({
     id: null,
     name: '',
     sku: '',
     category: 'Raw Materials',
+    supplierId: '',
     material: '',
     price: '0',
     unit: 'units',
@@ -508,6 +363,8 @@ export default function App() {
   const [locationFilter, setLocationFilter] = React.useState('All');
   const [categoryFilter, setCategoryFilter] = React.useState('All');
   const [productSort, setProductSort] = React.useState('name-asc');
+  const [selectedProductIds, setSelectedProductIds] = React.useState([]);
+  const [productDetails, setProductDetails] = React.useState(null);
 
   React.useEffect(() => {
     const handleOnlineStatus = () => setIsOnline(navigator.onLine);
@@ -578,23 +435,30 @@ export default function App() {
   };
 
   const persistSession = (user) => {
-    try {
-      if (remember) {
-        writeSaved('stockwise-session', user);
-        window.sessionStorage.removeItem('stockwise-session');
-      } else {
-        removeSaved('stockwise-session');
-        window.sessionStorage.setItem('stockwise-session', JSON.stringify(user));
-      }
-    } catch {
+    if (remember) {
       writeSaved('stockwise-session', user);
+      removeSession('stockwise-session');
+    } else {
+      removeSaved('stockwise-session');
+      writeSession('stockwise-session', user);
     }
   };
 
-  const handleLogin = (event) => {
+  const handleLogin = async (event) => {
     event.preventDefault();
-    setLoading(true);
     const email = loginForm.email.trim().toLowerCase();
+    const fieldErrors = validateLoginCredentials(loginForm);
+
+    if (Object.keys(fieldErrors).length > 0) {
+      setLoginFieldErrors(fieldErrors);
+      setLoginError('');
+      setLoading(false);
+      return;
+    }
+
+    setLoginFieldErrors({});
+    setLoading(true);
+    await new Promise((resolve) => window.requestAnimationFrame(resolve));
 
     if (authMode === 'register') {
       const name = loginForm.name.trim();
@@ -642,7 +506,7 @@ export default function App() {
 
   const logout = () => {
     removeSaved('stockwise-session');
-    window.sessionStorage.removeItem('stockwise-session');
+    removeSession('stockwise-session');
     setAuthenticated(false);
   };
 
@@ -652,6 +516,7 @@ export default function App() {
       name: '',
       sku: '',
       category: 'Raw Materials',
+      supplierId: '',
       material: '',
       price: '0',
       unit: settings.defaultUnit,
@@ -667,6 +532,7 @@ export default function App() {
       name: product.name,
       sku: product.sku,
       category: product.category,
+      supplierId: String(product.supplierId || suppliers.find((supplier) => supplier.name === product.supplierName)?.id || ''),
       material: product.material || '',
       price: String(product.price ?? 0),
       unit: product.unit,
@@ -700,6 +566,8 @@ export default function App() {
       name,
       sku,
       category: productForm.category,
+      supplierId: productForm.supplierId || '',
+      supplierName: suppliers.find((supplier) => String(supplier.id) === String(productForm.supplierId))?.name || '',
       material: productForm.material.trim(),
       price: Number(productForm.price) || 0,
       unit: productForm.unit.trim(),
@@ -726,10 +594,47 @@ export default function App() {
       variant: 'danger',
       onConfirm: () => {
         setProducts((current) => current.filter((entry) => entry.id !== product.id));
+        setSelectedProductIds((current) => current.filter((id) => id !== String(product.id)));
         setConfirmState(null);
         showToast('Product deleted from the catalog.');
       },
     });
+  };
+
+  const toggleProductSelection = (productId) => {
+    const id = String(productId);
+    setSelectedProductIds((current) => (
+      current.includes(id) ? current.filter((selectedId) => selectedId !== id) : [...current, id]
+    ));
+  };
+
+  const toggleVisibleProductSelection = () => {
+    const visibleIds = filteredProducts.map((product) => String(product.id));
+    const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedProductIds.includes(id));
+    setSelectedProductIds((current) => (
+      allVisibleSelected
+        ? current.filter((id) => !visibleIds.includes(id))
+        : [...new Set([...current, ...visibleIds])]
+    ));
+  };
+
+  const exportSelectedProducts = () => {
+    const selectedProducts = products.filter((product) => selectedProductIds.includes(String(product.id)));
+    if (!selectedProducts.length) return;
+    downloadCsv('stockwise-selected-products.csv', [
+      ['Name', 'SKU', 'Category', 'Material', 'Preferred supplier', 'Price', 'Unit', 'Reorder', ...warehouseList],
+      ...selectedProducts.map((product) => [
+        product.name,
+        product.sku,
+        product.category,
+        product.material || '',
+        product.supplierName || suppliers.find((supplier) => String(supplier.id) === String(product.supplierId))?.name || '',
+        product.price,
+        product.unit,
+        product.reorder,
+        ...warehouseList.map((location) => product.stock?.[location] || 0),
+      ]),
+    ]);
   };
 
   const saveInvoice = (event) => {
@@ -770,22 +675,18 @@ export default function App() {
   const recordPayment = (event) => {
     event.preventDefault();
     const invoice = invoices.find((entry) => String(entry.id) === String(paymentForm.invoiceId));
-    const paymentAmount = Number(paymentForm.amount) || 0;
-    if (!invoice) {
-      showToast('Select a valid invoice to record payment against.');
-      return;
-    }
-    if (paymentAmount <= 0) {
-      showToast('Payment amount must be greater than zero.');
-      return;
-    }
-
-    const totalReceived = payments
-      .filter((entry) => String(entry.invoiceId) === String(invoice.id))
-      .reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
-    const outstandingBalance = Math.max(invoice.amount - totalReceived, 0);
-    if (paymentAmount > outstandingBalance) {
-      showToast(`Payment exceeds the outstanding balance of ${new Intl.NumberFormat(undefined, { style: 'currency', currency: settings.currency }).format(outstandingBalance)}.`);
+    const paymentAmount = Number(paymentForm.amount);
+    const invoicePayments = invoice
+      ? payments.filter((entry) => String(entry.invoiceId) === String(invoice.id))
+      : [];
+    const paymentError = getPaymentValidationError(invoice, paymentAmount, invoicePayments);
+    if (paymentError) {
+      if (paymentError === 'Payment exceeds the outstanding balance.') {
+        const outstandingBalance = getInvoiceOutstanding(invoice.amount, invoicePayments);
+        showToast(`Payment exceeds the outstanding balance of ${new Intl.NumberFormat(undefined, { style: 'currency', currency: settings.currency }).format(outstandingBalance)}.`);
+      } else {
+        showToast(paymentError);
+      }
       return;
     }
 
@@ -802,10 +703,11 @@ export default function App() {
     setPayments((current) => [payment, ...current]);
     setInvoices((current) => current.map((entry) => {
       if (entry.id !== invoice.id) return entry;
-      const nextReceived = payments
-        .filter((item) => String(item.invoiceId) === String(entry.id))
-        .reduce((sum, item) => sum + Number(item.amount || 0), 0) + paymentAmount;
-      return { ...entry, status: nextReceived >= Number(entry.amount || 0) ? 'Paid' : 'Unpaid' };
+      const nextBalance = getInvoiceOutstanding(
+        entry.amount,
+        [...payments.filter((item) => String(item.invoiceId) === String(entry.id)), payment]
+      );
+      return { ...entry, status: nextBalance === 0 ? 'Paid' : 'Unpaid' };
     }));
     setPaymentForm({ invoiceId: '', customer: '', amount: '0', method: 'Bank transfer', date: '' });
     setModal('');
@@ -868,6 +770,10 @@ export default function App() {
       location: doc.location === renameTarget ? nextName : doc.location,
       partner: String(doc.partner || '').replaceAll(renameTarget, nextName),
     })));
+    setReturns((current) => current.map((item) => ({ ...item, location: item.location === renameTarget ? nextName : item.location })));
+    setPurchaseOrders((current) => current.map((order) => ({ ...order, location: order.location === renameTarget ? nextName : order.location })));
+    setSalesOrders((current) => current.map((order) => ({ ...order, location: order.location === renameTarget ? nextName : order.location })));
+    setShipments((current) => current.map((shipment) => ({ ...shipment, location: shipment.location === renameTarget ? nextName : shipment.location })));
     setRenameTarget('');
     setRenameValue('');
     setModal('');
@@ -880,7 +786,11 @@ export default function App() {
       return;
     }
     const hasStock = products.some((product) => Number(product.stock?.[location] || 0) > 0);
-    const usedInHistory = docs.some((doc) => doc.location === location || String(doc.partner || '').includes(location));
+    const usedInHistory = docs.some((doc) => doc.location === location || String(doc.partner || '').includes(location))
+      || returns.some((item) => item.location === location)
+      || purchaseOrders.some((order) => order.location === location)
+      || salesOrders.some((order) => order.location === location)
+      || shipments.some((shipment) => shipment.location === location);
     if (hasStock || usedInHistory) {
       showToast('Clear or relocate stock before removing this location.');
       return;
@@ -947,30 +857,20 @@ export default function App() {
       return;
     }
 
-    const sourceStock = Number(product.stock?.[operationForm.location] || 0);
-    if ((operationForm.type === 'Delivery' || operationForm.type === 'Internal') && sourceStock < qty) {
-      showToast('Not enough stock in the selected source location.');
+    const stockResult = applyInventoryOperation(product.stock, {
+      type: operationForm.type,
+      quantity: qty,
+      location: operationForm.location,
+      destination: operationForm.destination,
+    });
+    if (stockResult.error) {
+      showToast(stockResult.error);
       return;
     }
 
-    const updatedProducts = products.map((entry) => {
-      if (entry.id !== product.id) return entry;
-      const nextStock = { ...entry.stock };
-      if (operationForm.type === 'Receipt') {
-        nextStock[operationForm.location] = (Number(nextStock[operationForm.location]) || 0) + qty;
-      }
-      if (operationForm.type === 'Delivery') {
-        nextStock[operationForm.location] = (Number(nextStock[operationForm.location]) || 0) - qty;
-      }
-      if (operationForm.type === 'Internal') {
-        nextStock[operationForm.location] = (Number(nextStock[operationForm.location]) || 0) - qty;
-        nextStock[operationForm.destination] = (Number(nextStock[operationForm.destination]) || 0) + qty;
-      }
-      if (operationForm.type === 'Adjustment') {
-        nextStock[operationForm.location] = qty;
-      }
-      return { ...entry, stock: nextStock };
-    });
+    const updatedProducts = products.map((entry) => (
+      entry.id === product.id ? { ...entry, stock: stockResult.stock } : entry
+    ));
 
     setProducts(updatedProducts);
     const reference = `${operationForm.type === 'Receipt' ? 'RCV' : operationForm.type === 'Delivery' ? 'OUT' : operationForm.type === 'Internal' ? 'INT' : 'ADJ'}-${Date.now().toString().slice(-5)}`;
@@ -997,6 +897,8 @@ export default function App() {
     const validRows = [];
     let skipped = 0;
     const parseIssues = [];
+    const rowIssues = [];
+    const seenSkus = new Set(products.map((product) => String(product.sku || '').trim().toUpperCase()));
 
     for (const file of files) {
       const extension = file.name.split('.').pop()?.toLowerCase();
@@ -1007,44 +909,21 @@ export default function App() {
 
       try {
         const text = await file.text();
-        let rows = [];
-        if (extension === 'json') {
-          const parsed = JSON.parse(text);
-          rows = Array.isArray(parsed) ? parsed : Array.isArray(parsed.products) ? parsed.products : [];
-        } else {
-          const delimiter = extension === 'tsv' ? '\t' : ',';
-          const parsedRows = parseDelimited(text, delimiter);
-          if (parsedRows.length < 2) {
-            throw new Error('A header row and at least one product row are required.');
-          }
-          const headers = parsedRows[0].map((header) => header.toLowerCase().replace(/[^a-z0-9]+/g, ''));
-          rows = parsedRows.slice(1).map((row) => Object.fromEntries(headers.map((header, index) => [header, row[index] ?? ''])));
-        }
-
-        rows.forEach((record) => {
-          if (!record || typeof record !== 'object') {
+        const result = parseProductImportText(text, extension, settings.defaultUnit);
+        skipped += result.skipped;
+        rowIssues.push(...result.errors.map((issue) => ({ file: file.name, ...issue })));
+        result.products.forEach((product) => {
+          if (seenSkus.has(product.sku)) {
             skipped += 1;
+            rowIssues.push({
+              file: file.name,
+              row: product.sourceRow ?? '—',
+              issue: `SKU "${product.sku}" already exists in the catalog or another selected file.`,
+            });
             return;
           }
-          const name = String(record.name || record.product || record.productname || '').trim();
-          const sku = String(record.sku || record.code || record.itemcode || '').trim().toUpperCase();
-          const quantity = Number(record.quantity || record.qty || record.stock || record.onhand || 0);
-          const price = Number(record.price || record.unitprice || record.cost || 0);
-          const reorder = Number(record.reorder || record.reorderpoint || record.minimumstock || 0);
-          if (!name || !sku || !Number.isFinite(quantity) || quantity < 0 || !Number.isFinite(price) || price < 0 || !Number.isFinite(reorder) || reorder < 0) {
-            skipped += 1;
-            return;
-          }
-          validRows.push({
-            name,
-            sku,
-            material: String(record.material || record.composition || '').trim(),
-            category: String(record.category || 'Other').trim() || 'Other',
-            unit: String(record.unit || record.uom || settings.defaultUnit).trim() || settings.defaultUnit,
-            quantity,
-            price,
-            reorder,
-          });
+          seenSkus.add(product.sku);
+          validRows.push({ ...product, sourceFile: file.name });
         });
       } catch (error) {
         parseIssues.push(`${file.name} (${error.message || 'unable to parse'})`);
@@ -1052,6 +931,10 @@ export default function App() {
     }
 
     setImportPreview(validRows);
+    setImportErrors([
+      ...rowIssues,
+      ...parseIssues.map((issue) => ({ file: issue, row: '—', issue: 'File could not be imported. Check its format and contents.' })),
+    ]);
     setImportMessage(
       validRows.length
         ? `${validRows.length} valid product rows ready to import${skipped ? `; ${skipped} rows skipped` : ''}.`
@@ -1065,15 +948,21 @@ export default function App() {
       return;
     }
 
-    const existingSkus = new Set(products.map((product) => product.sku.toUpperCase()));
+    const existingSkus = new Set(products.map((product) => String(product.sku || '').trim().toUpperCase()));
     const inserted = [];
+    let skippedDuplicates = 0;
     importPreview.forEach((item, index) => {
-      if (existingSkus.has(item.sku)) return;
+      if (existingSkus.has(String(item.sku || '').trim().toUpperCase())) {
+        skippedDuplicates += 1;
+        return;
+      }
       const newProduct = {
         id: Date.now() + index,
         name: item.name,
         sku: item.sku,
         category: item.category,
+        supplierId: suppliers.find((supplier) => supplier.name.trim().toLowerCase() === String(item.supplierName || '').trim().toLowerCase())?.id || '',
+        supplierName: item.supplierName || '',
         material: item.material,
         price: item.price,
         unit: item.unit,
@@ -1091,7 +980,8 @@ export default function App() {
     setModal('');
     setImportPreview([]);
     setImportMessage('');
-    showToast(`${inserted.length} product${inserted.length === 1 ? '' : 's'} imported.`);
+    setImportErrors([]);
+    showToast(`${inserted.length} product${inserted.length === 1 ? '' : 's'} imported${skippedDuplicates ? `; ${skippedDuplicates} duplicate${skippedDuplicates === 1 ? '' : 's'} skipped` : ''}.`);
   };
 
   const filteredProducts = React.useMemo(() => {
@@ -1129,8 +1019,23 @@ export default function App() {
   const lowStockProducts = products.filter((product) => isLowStock(product, settings.alertRule));
   const outOfStockCount = products.filter((product) => totalStock(product) === 0).length;
   const totalInventoryValue = products.reduce((sum, product) => sum + totalStock(product) * Number(product.price || 0), 0);
+  const outstandingInvoiceTotal = invoices
+    .filter((invoice) => invoice.kind === 'Invoice' && invoice.status === 'Unpaid')
+    .reduce((sum, invoice) => {
+      const received = payments
+        .filter((payment) => String(payment.invoiceId) === String(invoice.id))
+        .reduce((paid, payment) => paid + Number(payment.amount || 0), 0);
+      return sum + Math.max(Number(invoice.amount || 0) - received, 0);
+    }, 0);
   const totalTrackedUnits = products.reduce((sum, product) => sum + totalStock(product), 0);
   const activeProductCount = products.filter((product) => totalStock(product) > 0).length;
+  const returnableSalesOrders = salesOrders.filter((order) => {
+    if (order.status !== 'Shipped') return false;
+    const alreadyReturned = returns
+      .filter((item) => item.orderId === order.id && item.status !== 'Rejected')
+      .reduce((sum, item) => sum + Number(item.qty || 0), 0);
+    return alreadyReturned < Number(order.qty || 0);
+  });
   const currentReceipts = docs.filter((doc) => doc.type === 'Receipt' && doc.status !== 'Done').length;
   const approvalQueue = React.useMemo(() => {
     const queue = [];
@@ -1154,8 +1059,9 @@ export default function App() {
         actor: doc.actor || 'System',
         reference: doc.id,
         status: doc.status,
-        timestamp: doc.date || new Date().toISOString().slice(0, 10),
+        timestamp: doc.date || null,
         amount: doc.qty,
+        amountType: 'quantity',
       })),
       ...purchaseOrders.map((order) => ({
         id: `po-${order.id}`,
@@ -1164,8 +1070,9 @@ export default function App() {
         actor: order.actor || 'Procurement',
         reference: order.id,
         status: order.status,
-        timestamp: order.createdAt || new Date().toISOString().slice(0, 10),
+        timestamp: order.createdAt || null,
         amount: Number(order.total || 0),
+        amountType: 'currency',
       })),
       ...salesOrders.map((order) => ({
         id: `so-${order.id}`,
@@ -1174,8 +1081,9 @@ export default function App() {
         actor: order.actor || 'Sales',
         reference: order.id,
         status: order.status,
-        timestamp: order.createdAt || new Date().toISOString().slice(0, 10),
+        timestamp: order.createdAt || null,
         amount: Number(order.total || 0),
+        amountType: 'currency',
       })),
       ...returns.map((item) => ({
         id: `ret-${item.id}`,
@@ -1184,8 +1092,9 @@ export default function App() {
         actor: item.actor || 'Customer service',
         reference: item.id,
         status: item.status,
-        timestamp: item.createdAt || new Date().toISOString().slice(0, 10),
+        timestamp: item.createdAt || null,
         amount: Number(item.qty || 0),
+        amountType: 'quantity',
       })),
       ...payments.map((payment) => ({
         id: `pay-${payment.id || payment.invoiceId}`,
@@ -1194,8 +1103,9 @@ export default function App() {
         actor: payment.actor || 'Finance',
         reference: payment.invoiceId || payment.id,
         status: payment.status || 'Recorded',
-        timestamp: payment.date || new Date().toISOString().slice(0, 10),
+        timestamp: payment.date || payment.createdAt || null,
         amount: Number(payment.amount || 0),
+        amountType: 'currency',
       })),
     ];
 
@@ -1209,9 +1119,7 @@ export default function App() {
       .map((product) => {
         const stock = totalStock(product);
         const reorder = Number(product.reorder) || 0;
-        const demand = salesOrders
-          .filter((order) => order.productName === product.name)
-          .reduce((sum, order) => sum + Number(order.qty || 0), 0);
+        const demand = getRecentSalesDemand(salesOrders, product.name);
         const recentReceipts = docs
           .filter((doc) => doc.product === product.name && doc.type === 'Receipt')
           .reduce((sum, doc) => sum + Number(doc.qty || 0), 0);
@@ -1219,8 +1127,8 @@ export default function App() {
           .filter((doc) => doc.product === product.name && doc.type === 'Delivery')
           .reduce((sum, doc) => sum + Number(doc.qty || 0), 0);
         const netMovement = recentReceipts - recentDeliveries;
-        const avgDailyDemand = demand > 0 ? demand / 30 : 0;
-        const coverageDays = avgDailyDemand > 0 ? stock / avgDailyDemand : stock > 0 ? 999 : 0;
+        const avgDailyDemand = demand.units === null ? null : demand.units / 30;
+        const coverageDays = avgDailyDemand > 0 ? stock / avgDailyDemand : null;
 
         let risk = 'Stable';
         let recommendation = 'Maintain';
@@ -1228,19 +1136,14 @@ export default function App() {
         if (stock <= reorder) {
           risk = 'Critical';
           recommendation = 'Reorder now';
-        } else if (stock <= reorder * 1.25) {
-          risk = 'Watch';
-          recommendation = 'Monitor purchase timing';
-        } else if (stock >= reorder * 3) {
-          risk = 'Excess';
-          recommendation = 'Review slow-moving stock';
         }
 
         return {
           ...product,
           stock,
           reorder,
-          demand,
+          demand: demand.units,
+          hasUndatedDemand: demand.hasUndatedOrders,
           netMovement,
           coverageDays,
           risk,
@@ -1249,77 +1152,44 @@ export default function App() {
       })
       .sort((a, b) => {
         const riskOrder = { Critical: 0, Watch: 1, Stable: 2, Excess: 3 };
-        return riskOrder[a.risk] - riskOrder[b.risk] || b.coverageDays - a.coverageDays;
+        return riskOrder[a.risk] - riskOrder[b.risk] || (b.coverageDays ?? -1) - (a.coverageDays ?? -1);
       })
       .slice(0, 12);
   }, [products, salesOrders, docs]);
-  const safetyStockRecommendations = React.useMemo(() => {
-    return products
-      .map((product) => {
-        const stock = totalStock(product);
-        const recentSales = salesOrders.filter((order) => order.productName === product.name);
-        const demandUnits = recentSales.reduce((sum, order) => sum + Number(order.qty || 0), 0);
-        const avgDailyDemand = demandUnits > 0 ? demandUnits / 30 : 0;
-        const leadTimeDays = suppliers.find((supplier) => supplier.name === product.supplierName || supplier.name === product.supplier)?.leadTime || 7;
-        const deviationValue = recentSales.length > 1
-          ? Math.sqrt(recentSales.reduce((sum, order) => sum + (Number(order.qty || 0) - avgDailyDemand) ** 2, 0) / recentSales.length)
-          : Math.max(avgDailyDemand * 0.5, 1);
-        const recommendedSafety = Math.max(0, Math.ceil((avgDailyDemand * leadTimeDays * 0.5) + (deviationValue * Math.max(leadTimeDays * 0.5, 3))));
-        const targetCover = Math.max(recommendedSafety + Math.ceil(avgDailyDemand * leadTimeDays), Number(product.reorder || 0));
-        const protectionGap = Math.max(targetCover - stock, 0);
-
-        let policyStatus = 'Healthy';
-        if (stock < recommendedSafety) policyStatus = 'Critical';
-        else if (stock < targetCover) policyStatus = 'Watch';
-
-        return {
-          ...product,
-          stock,
-          avgDailyDemand,
-          leadTimeDays,
-          recommendedSafety,
-          targetCover,
-          protectionGap,
-          policyStatus,
-        };
-      })
-      .filter((item) => item.stock > 0 || item.avgDailyDemand > 0 || Number(item.reorder || 0) > 0)
-      .sort((a, b) => {
-        const statusOrder = { Critical: 0, Watch: 1, Healthy: 2 };
-        return statusOrder[a.policyStatus] - statusOrder[b.policyStatus] || b.protectionGap - a.protectionGap;
-      })
-      .slice(0, 8);
-  }, [products, salesOrders, suppliers]);
+  const measuredCoverageDays = forecastSignals
+    .map((item) => item.coverageDays)
+    .filter((days) => Number.isFinite(days));
+  const averageCoverageDays = measuredCoverageDays.length
+    ? measuredCoverageDays.reduce((sum, days) => sum + days, 0) / measuredCoverageDays.length
+    : null;
+  const safetyStockRecommendations = [];
   const abcSegmentation = React.useMemo(() => {
+    const fulfilledOrders = salesOrders.filter((order) => order.status === 'Shipped');
     const productSales = products
       .map((product) => {
-        const revenue = salesOrders
+        const shippedOrderValue = fulfilledOrders
           .filter((order) => order.productName === product.name)
           .reduce((sum, order) => sum + Number(order.total || 0), 0);
-        const units = salesOrders
+        const units = fulfilledOrders
           .filter((order) => order.productName === product.name)
           .reduce((sum, order) => sum + Number(order.qty || 0), 0);
-        return {
-          ...product,
-          revenue,
-          units,
-        };
+        return { ...product, shippedOrderValue, units };
       })
-      .filter((item) => item.revenue > 0 || item.units > 0)
-      .sort((a, b) => b.revenue - a.revenue);
+      .filter((item) => item.shippedOrderValue > 0 || item.units > 0)
+      .sort((a, b) => b.shippedOrderValue - a.shippedOrderValue);
 
-    const totalRevenue = productSales.reduce((sum, item) => sum + item.revenue, 0);
+    const totalShippedValue = productSales.reduce((sum, item) => sum + item.shippedOrderValue, 0);
 
     let cumulative = 0;
     return productSales.map((item) => {
-      cumulative += totalRevenue > 0 ? item.revenue / totalRevenue : 0;
+      cumulative += totalShippedValue > 0 ? item.shippedOrderValue / totalShippedValue : 0;
       let className = 'C';
       if (cumulative <= 0.7) className = 'A';
       else if (cumulative <= 0.9) className = 'B';
 
       return {
         ...item,
-        contributionPct: totalRevenue > 0 ? (item.revenue / totalRevenue) * 100 : 0,
+        contributionPct: totalShippedValue > 0 ? (item.shippedOrderValue / totalShippedValue) * 100 : 0,
         cumulativePct: cumulative * 100,
         className,
       };
@@ -1383,39 +1253,30 @@ export default function App() {
       .map((product) => {
         const stock = totalStock(product);
         const reorder = Number(product.reorder) || 0;
-        const unitPrice = Number(product.price || 0);
-        const demand = salesOrders
-          .filter((order) => order.productName === product.name)
-          .reduce((sum, order) => sum + Number(order.qty || 0), 0);
-        const leadTime = suppliers.length
-          ? Math.round(suppliers.reduce((sum, supplier) => sum + Number(supplier.leadTime || 0), 0) / suppliers.length)
-          : 7;
-        const gap = Math.max(reorder - stock, 0);
-        const demandBuffer = Math.max(Math.ceil(demand * 0.6), Math.ceil(reorder * 0.4));
-        const recommendedQty = Math.max(gap + demandBuffer, reorder + 5);
-        const supplier = suppliers.find((entry) => entry.category === product.category) || suppliers[0];
-
-        let priority = 'Medium';
-        if (stock <= reorder) priority = 'High';
-        if (stock === 0) priority = 'Critical';
-        if (stock > reorder * 2) priority = 'Low';
+        const demand = getRecentSalesDemand(salesOrders, product.name);
+        const recommendedQty = Math.max(reorder - stock, 0);
+        const supplier = suppliers.find((entry) => (
+          String(entry.id) === String(product.supplierId)
+          || entry.name === product.supplierName
+          || entry.name === product.supplier
+        ));
+        const priority = stock === 0 ? 'Critical' : stock <= reorder ? 'High' : 'Medium';
 
         return {
           ...product,
           stock,
           reorder,
-          demand,
-          leadTime,
+          demand: demand.units,
+          hasUndatedDemand: demand.hasUndatedOrders,
           recommendedQty,
-          estimatedCost: recommendedQty * unitPrice,
           supplierName: supplier?.name || 'No supplier',
           priority,
         };
       })
-      .filter((item) => item.stock <= item.reorder * 1.25 || item.demand > 0)
+      .filter((item) => item.stock <= item.reorder)
       .sort((a, b) => {
-        const priorityOrder = { Critical: 0, High: 1, Medium: 2, Low: 3 };
-        return priorityOrder[a.priority] - priorityOrder[b.priority] || b.demand - a.demand;
+        const priorityOrder = { Critical: 0, High: 1, Medium: 2 };
+        return priorityOrder[a.priority] - priorityOrder[b.priority];
       })
       .slice(0, 5);
   }, [products, salesOrders, suppliers]);
@@ -1423,24 +1284,27 @@ export default function App() {
     return suppliers.map((supplier) => {
       const activePOrders = purchaseOrders.filter((order) => order.supplierName === supplier.name);
       const openOrders = activePOrders.filter((order) => order.status !== 'Received').length;
-      const lateShipments = shipments.filter((shipment) => shipment.status === 'Delayed' && activePOrders.some((order) => order.id === shipment.orderId)).length;
+      const lateShipments = null;
       const completedReceipts = activePOrders.filter((order) => order.status === 'Received').length;
-      const onTimeRate = supplier.onTimeRate || Math.max(80, 100 - Math.max(0, supplier.leadTime - 5) * 3 - lateShipments * 12);
-      let riskLevel = 'Healthy';
-      if (supplier.leadTime > 14 || lateShipments > 0 || openOrders > 2) riskLevel = 'Watch';
-      if (supplier.leadTime > 21 || lateShipments > 1 || openOrders > 4) riskLevel = 'Critical';
+      const onTimeRate = null;
+      const configuredLeadTime = Number(supplier.leadTime);
+      const leadTime = Number.isFinite(configuredLeadTime) && configuredLeadTime > 0 ? configuredLeadTime : null;
+      let riskLevel = leadTime === null ? 'Open' : 'Healthy';
+      if ((leadTime !== null && leadTime > 14) || openOrders > 2) riskLevel = 'Watch';
+      if ((leadTime !== null && leadTime > 21) || openOrders > 4) riskLevel = 'Critical';
 
       return {
         ...supplier,
+        leadTime,
         activePOrders,
         openOrders,
         lateShipments,
         completedReceipts,
-        onTimeRate: Math.min(100, Math.max(0, onTimeRate)),
+        onTimeRate,
         riskLevel,
       };
     }).sort((a, b) => {
-      const riskRank = { Critical: 0, Watch: 1, Healthy: 2 };
+              const riskRank = { Critical: 0, Watch: 1, Healthy: 2, Open: 3 };
       return riskRank[a.riskLevel] - riskRank[b.riskLevel] || b.onTimeRate - a.onTimeRate;
     });
   }, [suppliers, purchaseOrders, shipments]);
@@ -1451,14 +1315,12 @@ export default function App() {
         const product = products.find((entry) => entry.id === shipment.productId);
         const stockNow = product ? Number(product.stock?.[shipment.location] || 0) : 0;
         const onTimeRisk = shipment.status === 'Delayed' ? 'Critical' : shipment.status === 'In Transit' ? 'Watch' : 'Healthy';
-        const minutesToDispatch = shipment.status === 'Ready' ? 4 : shipment.status === 'In Transit' ? 12 : 0;
         return {
           ...shipment,
           order,
           product,
           stockNow,
           onTimeRisk,
-          minutesToDispatch,
           dispatchHealth: shipment.status === 'Ready' && stockNow >= Number(shipment.qty || 0) ? 'Ready' : shipment.status === 'In Transit' ? 'In transit' : shipment.status === 'Delayed' ? 'Delayed' : 'Check',
         };
       })
@@ -1471,11 +1333,14 @@ export default function App() {
     return products
       .map((product) => {
         const sellPrice = Number(product.price || 0);
-        const unitCost = Math.max(0, sellPrice * 0.45);
+        if (!Number.isFinite(sellPrice) || sellPrice <= 0) return null;
+        if (product.unitCost === null || product.unitCost === undefined || product.unitCost === '') return null;
+        const unitCost = Number(product.unitCost);
+        if (!Number.isFinite(unitCost) || unitCost < 0) return null;
         const marginPercent = sellPrice > 0 ? ((sellPrice - unitCost) / sellPrice) * 100 : 0;
         const unitsOnHand = totalStock(product);
         const unitsSold = salesOrders
-          .filter((order) => order.productName === product.name)
+          .filter((order) => order.productName === product.name && order.status === 'Shipped')
           .reduce((sum, order) => sum + Number(order.qty || 0), 0);
         const potentialGross = unitsSold * sellPrice;
 
@@ -1494,6 +1359,7 @@ export default function App() {
           health,
         };
       })
+      .filter(Boolean)
       .sort((a, b) => {
         const healthOrder = { Critical: 0, Watch: 1, Healthy: 2 };
         return healthOrder[a.health] - healthOrder[b.health] || b.marginPercent - a.marginPercent;
@@ -1506,31 +1372,19 @@ export default function App() {
       .map((customer) => {
         const customerOrders = salesOrders.filter((order) => order.customerName === customer.name);
         const revenue = customerOrders.reduce((sum, order) => sum + Number(order.total || 0), 0);
-        const units = customerOrders.reduce((sum, order) => sum + Number(order.qty || 0), 0);
-        const returnedUnits = returns.filter((item) => item.customerName === customer.name).reduce((sum, item) => sum + Number(item.qty || 0), 0);
+        const units = customerOrders.filter((order) => order.status === 'Shipped').reduce((sum, order) => sum + Number(order.qty || 0), 0);
+        const returnedUnits = returns
+          .filter((item) => item.customerName === customer.name && item.status !== 'Rejected')
+          .reduce((sum, item) => sum + Number(item.qty || 0), 0);
         const avgOrderValue = customerOrders.length ? revenue / customerOrders.length : 0;
-        const margin = customerOrders.reduce((sum, order) => {
-          const product = products.find((entry) => entry.name === order.productName);
-          const sellPrice = Number(order.unitPrice || product?.price || 0);
-          const unitCost = Math.max(0, sellPrice * 0.45);
-          return sum + Number(order.qty || 0) * (sellPrice - unitCost);
-        }, 0);
-        const returnRate = units > 0 ? (returnedUnits / units) * 100 : 0;
-        const grossMarginRate = revenue > 0 ? (margin / revenue) * 100 : 0;
         const lastOrder = customerOrders.slice().sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))[0];
-        let accountHealth = 'Stable';
-        if (revenue === 0 && customerOrders.length === 0) accountHealth = 'Stable';
-        if (returnedUnits > 0 || avgOrderValue < 250 || grossMarginRate < 20) accountHealth = 'Watch';
-        if (returnedUnits > Math.max(1, units * 0.2) || revenue < 400 || grossMarginRate < 10 || returnRate > 25) accountHealth = 'Critical';
+        const accountHealth = returnedUnits > 0 ? 'Returns recorded' : 'No returns';
 
         return {
           ...customer,
           revenue,
           units,
           avgOrderValue,
-          margin,
-          grossMarginRate,
-          returnRate,
           returnedUnits,
           orderCount: customerOrders.length,
           lastOrderDate: lastOrder?.createdAt || '—',
@@ -1545,50 +1399,50 @@ export default function App() {
   const executiveSignals = React.useMemo(() => {
     const totalRevenue = salesOrders.reduce((sum, order) => sum + Number(order.total || 0), 0);
     const deliveredCount = shipments.filter((shipment) => shipment.status === 'Delivered').length;
-    const onTimeRate = shipments.length ? (deliveredCount / shipments.length) * 100 : 100;
-    const productSalesUnits = salesOrders.reduce((sum, order) => sum + Number(order.qty || 0), 0);
-    const returnedUnits = returns.reduce((sum, item) => sum + Number(item.qty || 0), 0);
-    const returnRate = productSalesUnits > 0 ? (returnedUnits / productSalesUnits) * 100 : 0;
+    const onTimeRate = shipments.length ? (deliveredCount / shipments.length) * 100 : null;
+    const fulfilledSalesOrders = salesOrders.filter((order) => order.status === 'Shipped');
+    const shippedOrderIds = new Set(fulfilledSalesOrders.map((order) => order.id));
+    const productSalesUnits = fulfilledSalesOrders.reduce((sum, order) => sum + Number(order.qty || 0), 0);
+    const returnedUnits = returns
+      .filter((item) => item.status === 'Approved' && shippedOrderIds.has(item.orderId))
+      .reduce((sum, item) => sum + Number(item.qty || 0), 0);
+    const returnRate = productSalesUnits > 0 ? (returnedUnits / productSalesUnits) * 100 : null;
     const inventoryValue = products.reduce((sum, product) => sum + totalStock(product) * Number(product.price || 0), 0);
-    const avgSupplierSla = suppliers.length
-      ? suppliers.reduce((sum, supplier) => sum + Number(supplier.leadTime || 0), 0) / suppliers.length
-      : 0;
-    const grossMargin = totalRevenue - products.reduce((sum, product) => sum + totalStock(product) * Number(product.price || 0) * 0.45, 0);
+    const supplierLeadTimes = suppliers
+      .map((supplier) => Number(supplier.leadTime))
+      .filter((leadTime) => Number.isFinite(leadTime) && leadTime > 0);
+    const avgSupplierSla = supplierLeadTimes.length
+      ? supplierLeadTimes.reduce((sum, leadTime) => sum + leadTime, 0) / supplierLeadTimes.length
+      : null;
 
     return [
-      { label: 'Revenue', value: moneyFormatter.format(totalRevenue), status: totalRevenue > 0 ? 'Healthy' : 'Watch' },
-      { label: 'Gross margin', value: moneyFormatter.format(Math.max(0, grossMargin)), status: grossMargin > 0 ? 'Healthy' : 'Watch' },
-      { label: 'Fill rate', value: `${Math.max(0, Math.min(100, Math.round(onTimeRate)))}%`, status: onTimeRate >= 90 ? 'Healthy' : onTimeRate >= 75 ? 'Watch' : 'Critical' },
-      { label: 'Return rate', value: `${Math.round(returnRate)}%`, status: returnRate <= 8 ? 'Healthy' : returnRate <= 15 ? 'Watch' : 'Critical' },
-      { label: 'Stock value', value: moneyFormatter.format(inventoryValue), status: inventoryValue > 0 ? 'Healthy' : 'Watch' },
-      { label: 'Supplier SLA', value: `${Math.round(avgSupplierSla || 0)}d avg lead`, status: avgSupplierSla <= 10 ? 'Healthy' : avgSupplierSla <= 14 ? 'Watch' : 'Critical' },
+      { label: 'Sales order value', value: moneyFormatter.format(totalRevenue), status: totalRevenue > 0 ? 'Healthy' : 'Watch' },
+      { label: 'Gross margin', value: 'Not tracked', status: 'Open' },
+      { label: 'Shipment delivery completion', value: onTimeRate === null ? '—' : `${Math.round(onTimeRate)}%`, status: onTimeRate === null ? 'Open' : onTimeRate >= 90 ? 'Healthy' : onTimeRate >= 75 ? 'Watch' : 'Critical' },
+      { label: 'Return rate', value: returnRate === null ? '—' : `${Math.round(returnRate)}%`, status: returnRate === null ? 'Open' : returnRate <= 8 ? 'Healthy' : returnRate <= 15 ? 'Watch' : 'Critical' },
+      { label: 'Stock value at listed price', value: moneyFormatter.format(inventoryValue), status: inventoryValue > 0 ? 'Healthy' : 'Watch' },
+      { label: 'Average supplier lead time', value: avgSupplierSla === null ? '—' : `${Math.round(avgSupplierSla)}d`, status: avgSupplierSla === null ? 'Open' : avgSupplierSla <= 10 ? 'Healthy' : avgSupplierSla <= 14 ? 'Watch' : 'Critical' },
     ];
   }, [salesOrders, shipments, returns, products, suppliers, moneyFormatter]);
-  const planVariance = React.useMemo(() => {
-    const targetUnits = products.reduce((sum, product) => sum + (Number(product.reorder || 0) * 2), 0);
-    const actualSoldUnits = salesOrders.reduce((sum, order) => sum + Number(order.qty || 0), 0);
-    const actualStockUnits = products.reduce((sum, product) => sum + totalStock(product), 0);
-    const plannedStockUnits = Math.max(targetUnits, actualStockUnits, 1);
-    const salesVariance = targetUnits > 0 ? ((actualSoldUnits - targetUnits) / targetUnits) * 100 : 0;
-    const stockVariance = ((actualStockUnits - plannedStockUnits) / plannedStockUnits) * 100;
-    const receivedValue = purchaseOrders.filter((order) => order.status === 'Received').reduce((sum, order) => sum + Number(order.total || 0), 0);
-    const committedValue = purchaseOrders.reduce((sum, order) => sum + Number(order.total || 0), 0);
-    const procurementVariance = committedValue > 0 ? ((receivedValue - committedValue) / committedValue) * 100 : 0;
-
-    return [
-      { label: 'Sales plan vs actual', value: `${salesVariance >= 0 ? '+' : ''}${Math.round(salesVariance)}%`, status: salesVariance >= -10 ? 'Healthy' : salesVariance >= -25 ? 'Watch' : 'Critical' },
-      { label: 'Stock plan vs actual', value: `${stockVariance >= 0 ? '+' : ''}${Math.round(stockVariance)}%`, status: stockVariance >= -5 ? 'Healthy' : stockVariance >= -15 ? 'Watch' : 'Critical' },
-      { label: 'Procurement variance', value: `${procurementVariance >= 0 ? '+' : ''}${Math.round(procurementVariance)}%`, status: procurementVariance <= 10 ? 'Healthy' : procurementVariance <= 25 ? 'Watch' : 'Critical' },
-    ];
-  }, [products, salesOrders, purchaseOrders]);
   const cashCycle = React.useMemo(() => {
     const paidAmount = payments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
-    const outstandingReceivables = invoices.filter((invoice) => invoice.kind === 'Invoice' && invoice.status === 'Unpaid').reduce((sum, invoice) => sum + Number(invoice.amount || 0), 0);
+    const outstandingReceivables = invoices
+      .filter((invoice) => invoice.kind === 'Invoice' && invoice.status === 'Unpaid')
+      .reduce((sum, invoice) => {
+        const received = payments
+          .filter((payment) => String(payment.invoiceId) === String(invoice.id))
+          .reduce((paid, payment) => paid + Number(payment.amount || 0), 0);
+        return sum + Math.max(Number(invoice.amount || 0) - received, 0);
+      }, 0);
     const purchaseCommitments = purchaseOrders.filter((order) => order.status !== 'Received').reduce((sum, order) => sum + Number(order.total || 0), 0);
-    const receivedFromCustomers = salesOrders.reduce((sum, order) => sum + Number(order.total || 0), 0);
-    const supplierLeadAverage = suppliers.length ? suppliers.reduce((sum, supplier) => sum + Number(supplier.leadTime || 0), 0) / suppliers.length : 0;
-    const collectionCycle = receivedFromCustomers > 0 ? (paidAmount / receivedFromCustomers) * 100 : 0;
-    const serviceHealth = supplierLeadAverage <= 10 ? 'Healthy' : supplierLeadAverage <= 15 ? 'Watch' : 'Critical';
+    const knownLeadTimes = suppliers
+      .map((supplier) => Number(supplier.leadTime))
+      .filter((leadTime) => Number.isFinite(leadTime) && leadTime > 0);
+    const supplierLeadAverage = knownLeadTimes.length
+      ? knownLeadTimes.reduce((sum, leadTime) => sum + leadTime, 0) / knownLeadTimes.length
+      : null;
+    const collectionCycle = null;
+    const serviceHealth = supplierLeadAverage === null ? 'Open' : supplierLeadAverage <= 10 ? 'Healthy' : supplierLeadAverage <= 15 ? 'Watch' : 'Critical';
 
     return {
       paidAmount,
@@ -1607,9 +1461,11 @@ export default function App() {
           .filter((doc) => doc.product === product.name)
           .sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
         const lastMovementDate = recentMovements[0]?.date ? new Date(recentMovements[0].date) : null;
-        const ageDays = lastMovementDate ? Math.max(0, Math.round((Date.now() - lastMovementDate.getTime()) / 86400000)) : 0;
-        const demand = salesOrders.filter((order) => order.productName === product.name).reduce((sum, order) => sum + Number(order.qty || 0), 0);
-        let agingStatus = 'Healthy';
+        const ageDays = lastMovementDate && Number.isFinite(lastMovementDate.getTime())
+          ? Math.max(0, Math.round((Date.now() - lastMovementDate.getTime()) / 86400000))
+          : null;
+        const demand = salesOrders.filter((order) => order.productName === product.name && order.status === 'Shipped').reduce((sum, order) => sum + Number(order.qty || 0), 0);
+        let agingStatus = ageDays === null ? 'Open' : 'Healthy';
         if (stock === 0 || ageDays > 45) agingStatus = 'Stale';
         if (stock > 0 && ageDays > 30 && demand === 0) agingStatus = 'Slow';
         if (stock > 0 && ageDays > 60) agingStatus = 'Critical';
@@ -1623,31 +1479,32 @@ export default function App() {
         };
       })
       .sort((a, b) => {
-        const statusOrder = { Critical: 0, Stale: 1, Slow: 2, Healthy: 3 };
-        return statusOrder[a.agingStatus] - statusOrder[b.agingStatus] || b.ageDays - a.ageDays;
+        const statusOrder = { Critical: 0, Stale: 1, Slow: 2, Healthy: 3, Open: 4 };
+        return statusOrder[a.agingStatus] - statusOrder[b.agingStatus] || (b.ageDays ?? -1) - (a.ageDays ?? -1);
       })
       .slice(0, 8);
   }, [products, docs, salesOrders]);
   const replenishmentCoverage = React.useMemo(() => {
     const windowDays = 30;
-    const timeWindowMs = windowDays * 86400000;
     const now = Date.now();
 
     return products
       .map((product) => {
         const stock = totalStock(product);
-        const recentSales = salesOrders.filter((order) => {
-          const createdAt = new Date(order.createdAt || 0).getTime();
-          return order.productName === product.name && createdAt >= now - timeWindowMs;
-        });
-        const demandUnits = recentSales.reduce((sum, order) => sum + Number(order.qty || 0), 0);
-        const avgDailyDemand = recentSales.length ? demandUnits / windowDays : 0;
-        const supplierLead = suppliers.find((supplier) => supplier.name === product.supplierName || supplier.name === product.supplier)?.leadTime || 7;
-        const daysCover = avgDailyDemand > 0 ? stock / avgDailyDemand : stock > 0 ? 999 : 0;
+        const demand = getRecentSalesDemand(salesOrders, product.name, now);
+        const avgDailyDemand = demand.units === null ? null : demand.units / windowDays;
+        const supplier = suppliers.find((entry) => (
+          String(entry.id) === String(product.supplierId)
+          || entry.name === product.supplierName
+          || entry.name === product.supplier
+        ));
+        const supplierLead = supplier && Number.isFinite(Number(supplier.leadTime)) ? Number(supplier.leadTime) : null;
+        const daysCover = avgDailyDemand > 0 ? stock / avgDailyDemand : null;
 
         let coverStatus = 'Healthy';
-        if (stock === 0 || daysCover < 7) coverStatus = 'Critical';
-        else if (daysCover < 14 || stock <= Number(product.reorder || 0)) coverStatus = 'Watch';
+        if (demand.units === null) coverStatus = 'Open';
+        else if (stock === 0 || (daysCover !== null && daysCover < 7)) coverStatus = 'Critical';
+        else if ((daysCover !== null && daysCover < 14) || stock <= Number(product.reorder || 0)) coverStatus = 'Watch';
 
         return {
           ...product,
@@ -1655,13 +1512,14 @@ export default function App() {
           avgDailyDemand,
           daysCover,
           supplierLead,
+          hasUndatedDemand: demand.hasUndatedOrders,
           coverStatus,
         };
       })
       .filter((item) => item.stock > 0 || item.avgDailyDemand > 0 || Number(item.reorder || 0) > 0)
       .sort((a, b) => {
-        const statusOrder = { Critical: 0, Watch: 1, Healthy: 2 };
-        return statusOrder[a.coverStatus] - statusOrder[b.coverStatus] || a.daysCover - b.daysCover;
+        const statusOrder = { Critical: 0, Watch: 1, Healthy: 2, Open: 3 };
+        return statusOrder[a.coverStatus] - statusOrder[b.coverStatus] || (a.daysCover ?? Infinity) - (b.daysCover ?? Infinity);
       })
       .slice(0, 8);
   }, [products, salesOrders, suppliers]);
@@ -1684,7 +1542,7 @@ export default function App() {
       .map((location) => {
         const totalUnits = products.reduce((sum, product) => sum + Number(product.stock?.[location] || 0), 0);
         const activeProducts = products.filter((product) => Number(product.stock?.[location] || 0) > 0).length;
-        const lowStockProductsAtLocation = products.filter((product) => Number(product.stock?.[location] || 0) <= Number(product.reorder || 0)).length;
+                                const lowStockProductsAtLocation = products.filter((product) => isLowStock(product, settings.alertRule) && Number(product.stock?.[location] || 0) > 0).length;
         const inbound = docs.filter((doc) => doc.location === location && doc.type === 'Receipt').reduce((sum, doc) => sum + Number(doc.qty || 0), 0);
         const outbound = docs.filter((doc) => doc.location === location && doc.type === 'Delivery').reduce((sum, doc) => sum + Number(doc.qty || 0), 0);
         const netFlow = inbound - outbound;
@@ -1709,7 +1567,7 @@ export default function App() {
         const healthOrder = { Critical: 0, Watch: 1, Healthy: 2 };
         return healthOrder[a.health] - healthOrder[b.health] || b.totalUnits - a.totalUnits;
       });
-  }, [warehouseList, products, docs]);
+  }, [warehouseList, products, docs, settings]);
   const todayPriorityText = products.length === 0
     ? 'Your workspace is ready. Add your first item to start tracking inventory.'
     : lowStockProducts.length
@@ -1734,7 +1592,7 @@ export default function App() {
     { label: 'New sales order', action: () => { setSalesForm({ customerId: customers[0]?.id || '', productId: products[0]?.id || '', qty: '1', unitPrice: '0', status: 'Draft', location: warehouseList[0] || '', expectedDate: '' }); setModal('sales'); }, icon: '↗' },
     { label: 'Create shipment', action: () => { setShipmentForm({ orderId: salesOrders[0]?.id || '', carrier: 'UPS', tracking: '', status: 'Ready', location: warehouseList[0] || '' }); setModal('shipment'); }, icon: '✦' },
     { label: 'Record payment', action: () => { setPaymentForm({ invoiceId: invoices[0]?.id || '', customer: invoices[0]?.party || '', amount: String(invoices[0]?.amount || '0'), method: 'Bank transfer', date: new Date().toISOString().slice(0, 10) }); setModal('payment'); }, icon: '$' },
-    { label: 'Process return', action: () => { setReturnForm({ orderId: salesOrders[0]?.id || '', customerId: customers[0]?.id || '', productId: products[0]?.id || '', qty: '1', reason: 'Damaged', location: warehouseList[0] || '' }); setModal('return'); }, icon: '↺' },
+    { label: 'Process return', action: () => { setReturnForm({ orderId: returnableSalesOrders[0]?.id || '', customerId: returnableSalesOrders[0]?.customerId || '', productId: returnableSalesOrders[0]?.productId || '', qty: '1', reason: 'Damaged', location: returnableSalesOrders[0]?.location || warehouseList[0] || '' }); setModal('return'); }, icon: '↺' },
     { label: 'Review approvals', page: 'Approvals', icon: '✓' },
     { label: 'Access control', page: 'Access', icon: '🔐' },
     { label: 'Open audit trail', page: 'Audit', icon: '◔' },
@@ -1743,7 +1601,7 @@ export default function App() {
     { label: 'New receipt', action: () => openOperation('Receipt'), icon: '↓' },
     { label: 'New transfer', action: () => openOperation('Internal'), icon: '⇄' },
     { label: 'Add warehouse', action: () => { setWarehouseForm({ name: '' }); setModal('warehouse'); }, icon: '⌂' },
-    { label: 'Import inventory', action: () => { setImportPreview([]); setImportMessage(''); setModal('import'); }, icon: '↥' },
+    { label: 'Import inventory', action: () => { setImportPreview([]); setImportMessage(''); setImportErrors([]); setModal('import'); }, icon: '↥' },
     { label: 'Open billing', page: 'Billing', icon: '$' },
     { label: 'Open reports', page: 'Reports', icon: '▥' },
     { label: 'Workspace settings', page: 'Settings', icon: '⚙' },
@@ -1853,8 +1711,36 @@ export default function App() {
       return;
     }
     if (item.type === 'Return') {
-      setReturns((current) => current.map((entry) => (entry.id === item.reference ? { ...entry, status: 'Approved' } : entry)));
-      showToast('Return approved and moved to the approved queue.');
+      const returnRecord = returns.find((entry) => entry.id === item.reference && entry.status === 'Pending');
+      const product = products.find((entry) => entry.id === returnRecord?.productId);
+      if (!returnRecord || !product) {
+        showToast('The pending return or its product could not be found.');
+        return;
+      }
+
+      if (returnRecord.stockRestored === false) {
+        setProducts((current) => current.map((entry) => {
+          if (entry.id !== product.id) return entry;
+          const nextStock = { ...entry.stock };
+          nextStock[returnRecord.location] = (Number(nextStock[returnRecord.location]) || 0) + Number(returnRecord.qty || 0);
+          return { ...entry, stock: nextStock };
+        }));
+        setDocs((current) => [{
+          id: `RCV-${Date.now().toString().slice(-5)}`,
+          type: 'Receipt',
+          product: product.name,
+          qty: Number(returnRecord.qty || 0),
+          location: returnRecord.location,
+          partner: `Return ${returnRecord.id} · ${returnRecord.customerName}`,
+          status: 'Done',
+          actor: displayUser.name,
+          date: new Date().toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }),
+        }, ...current]);
+      }
+      setReturns((current) => current.map((entry) => (
+        entry.id === returnRecord.id ? { ...entry, status: 'Approved', stockRestored: true } : entry
+      )));
+      showToast(returnRecord.stockRestored === false ? 'Return approved and stock restored.' : 'Return approved; existing stock entry retained.');
     }
   };
 
@@ -1891,9 +1777,8 @@ export default function App() {
       leadTime: Number(supplierForm.leadTime) || 5,
       slaTarget: Number(supplierForm.slaTarget) || 98,
       category: supplierForm.category,
-      rating: 'Good',
-      onTimeRate: 96,
-      riskLevel: 'Healthy',
+      rating: 'Not rated',
+      riskLevel: 'Unrated',
     };
     setSuppliers((current) => [supplier, ...current]);
     setSupplierForm({ name: '', contact: '', email: '', phone: '', leadTime: '5', slaTarget: '98', category: 'General' });
@@ -1996,10 +1881,10 @@ export default function App() {
       location,
       expectedDate: salesForm.expectedDate || 'Not scheduled',
       total: qty * unitPrice,
-      createdAt: new Date().toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }),
+      createdAt: new Date().toISOString(),
     };
 
-    if (order.status === 'Shipped' || order.status === 'Confirmed') {
+    if (order.status === 'Shipped') {
       setProducts((current) => current.map((entry) => {
         if (entry.id !== product.id) return entry;
         const nextStock = { ...entry.stock };
@@ -2029,16 +1914,13 @@ export default function App() {
   const saveShipment = (event) => {
     event.preventDefault();
     const order = salesOrders.find((entry) => String(entry.id) === String(shipmentForm.orderId));
-    if (!order) {
-      showToast('Select a valid sales order for this shipment.');
+    const orderBlockReason = getShipmentBlockReason(order, shipments);
+    if (orderBlockReason) {
+      showToast(orderBlockReason);
       return;
     }
 
-    const qty = Number(order.qty) || 0;
-    if (qty <= 0) {
-      showToast('This order has no units to ship.');
-      return;
-    }
+    const qty = Number(order.qty);
 
     const product = products.find((entry) => String(entry.id) === String(order.productId));
     if (!product) {
@@ -2047,9 +1929,9 @@ export default function App() {
     }
 
     const location = shipmentForm.location || warehouseList[0] || 'Main Warehouse';
-    const available = Number(product.stock?.[location] || 0);
-    if (available < qty) {
-      showToast('Not enough stock in this warehouse to create the shipment.');
+    const shipmentStock = deductShipmentStock(product.stock, qty, location);
+    if (shipmentStock.error) {
+      showToast(shipmentStock.error);
       return;
     }
 
@@ -2070,12 +1952,9 @@ export default function App() {
 
     setShipments((current) => [shipment, ...current]);
     setSalesOrders((current) => current.map((entry) => (entry.id === order.id ? { ...entry, status: 'Shipped' } : entry)));
-    setProducts((current) => current.map((entry) => {
-      if (entry.id !== product.id) return entry;
-      const nextStock = { ...entry.stock };
-      nextStock[location] = (Number(nextStock[location]) || 0) - qty;
-      return { ...entry, stock: nextStock };
-    }));
+    setProducts((current) => current.map((entry) => (
+      entry.id === product.id ? { ...entry, stock: shipmentStock.stock } : entry
+    )));
     setDocs((current) => [{
       id: `OUT-${Date.now().toString().slice(-5)}`,
       type: 'Delivery',
@@ -2108,6 +1987,22 @@ export default function App() {
       showToast('Return quantity must be greater than zero.');
       return;
     }
+    if (!salesOrder || salesOrder.status !== 'Shipped') {
+      showToast('Select a shipped sales order before recording a return.');
+      return;
+    }
+    if (String(salesOrder.customerId) !== String(customer.id) || String(salesOrder.productId) !== String(product.id)) {
+      showToast('The selected customer and product must match the sales order.');
+      return;
+    }
+    const alreadyReturned = returns
+      .filter((item) => item.orderId === salesOrder.id && item.status !== 'Rejected')
+      .reduce((sum, item) => sum + Number(item.qty || 0), 0);
+    const returnableQty = Math.max(Number(salesOrder.qty || 0) - alreadyReturned, 0);
+    if (qty > returnableQty) {
+      showToast(`Return quantity exceeds the ${formatNumber(returnableQty)} units remaining on this order.`);
+      return;
+    }
 
     const location = returnForm.location || warehouseList[0] || 'Main Warehouse';
     const nextReturn = {
@@ -2121,35 +2016,22 @@ export default function App() {
       reason: returnForm.reason || 'Damaged',
       location,
       status: 'Pending',
+      stockRestored: false,
       createdAt: new Date().toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }),
     };
-
-    setProducts((current) => current.map((entry) => {
-      if (entry.id !== product.id) return entry;
-      const nextStock = { ...entry.stock };
-      nextStock[location] = (Number(nextStock[location]) || 0) + qty;
-      return { ...entry, stock: nextStock };
-    }));
-
-    setDocs((current) => [{
-      id: `ADJ-${Date.now().toString().slice(-5)}`,
-      type: 'Adjustment',
-      product: product.name,
-      qty,
-      location,
-      partner: customer.name,
-      status: 'Done',
-      actor: displayUser.name,
-      date: new Date().toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }),
-    }, ...current]);
 
     setReturns((current) => [nextReturn, ...current]);
     setReturnForm({ orderId: '', customerId: '', productId: '', qty: '1', reason: 'Damaged', location: warehouseList[0] || 'Main Warehouse' });
     setModal('');
-    showToast('Inventory return recorded and stock restored.');
+    showToast('Return recorded for approval; stock updates after approval.');
   };
 
   const receivePurchaseOrder = (order) => {
+    if (order.status === 'Received') {
+      showToast('This purchase order has already been received.');
+      return;
+    }
+
     const product = products.find((entry) => entry.id === order.productId);
     if (!product) {
       showToast('Product no longer exists.');
@@ -2159,7 +2041,7 @@ export default function App() {
     const nextLocation = order.location || warehouseList[0] || 'Main Warehouse';
     const nextStock = { ...product.stock };
     nextStock[nextLocation] = (Number(nextStock[nextLocation]) || 0) + Number(order.qty || 0);
-    setProducts((current) => current.map((entry) => (entry.id === product.id ? { ...entry, stock: nextStock, price: Number(order.unitCost) || Number(entry.price || 0) } : entry)));
+    setProducts((current) => current.map((entry) => (entry.id === product.id ? { ...entry, stock: nextStock } : entry)));
     setDocs((current) => [
       {
         id: `RCV-${Date.now().toString().slice(-5)}`,
@@ -2207,34 +2089,18 @@ export default function App() {
                       <Feature icon={<InventoryIcon />} title="Real-time Inventory" text="Track stock across all locations" />
                       <Feature icon={<AutomationIcon />} title="Smart Automation" text="Reduce manual work" />
                       <Feature icon={<ReportsIcon />} title="Powerful Reports" text="Make data-driven decisions" />
-                      <Feature icon={<SecurityIcon />} title="Secure & Reliable" text="Your data, always protected" />
+                      <Feature icon={<SecurityIcon />} title="Browser-local demo" text="Workspace records stay in this browser" />
                     </div>
 
                     <div className="trusted">
-                      <div className="trusted-label">Trusted by 10,000+ businesses worldwide</div>
-                      <div className="trusted-logos">
-                        <div className="trusted-logo">◈ Acme Co</div>
-                        <div className="trusted-logo">◉ BrightMart</div>
-                        <div className="trusted-logo">◈ BuildIt</div>
-                        <div className="trusted-logo">✦ NovaTech</div>
-                      </div>
+                      <div className="trusted-label">Inventory workspace · browser-local demo</div>
                     </div>
                   </div>
 
                   <div className="analytics-card">
-                    <div className="analytics-label">Total Stock Value</div>
-                    <div className="analytics-value">$248,650</div>
-                    <div className="analytics-growth">↑ 12.3%</div>
-                    <svg className="chart" viewBox="0 0 200 58" preserveAspectRatio="none">
-                      <defs>
-                        <linearGradient id="chartGradient" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor="#3192ff" stopOpacity="0.4" />
-                          <stop offset="100%" stopColor="#3192ff" stopOpacity="0" />
-                        </linearGradient>
-                      </defs>
-                      <path d="M0 48 L15 43 L30 47 L45 36 L60 40 L75 29 L90 33 L105 20 L120 26 L135 17 L150 21 L165 10 L180 14 L200 4 V58 H0Z" fill="url(#chartGradient)" />
-                      <path d="M0 48 L15 43 L30 47 L45 36 L60 40 L75 29 L90 33 L105 20 L120 26 L135 17 L150 21 L165 10 L180 14 L200 4" fill="none" stroke="#45a2ff" strokeWidth="2" />
-                    </svg>
+                    <div className="analytics-label">Stock value · listed price</div>
+                    <div className="analytics-value">{products.length ? moneyFormatter.format(totalInventoryValue) : '—'}</div>
+                    <div className="analytics-growth">{products.length ? 'Calculated from recorded stock' : 'Add products to see a value'}</div>
                   </div>
                 </div>
 
@@ -2257,7 +2123,7 @@ export default function App() {
 
                     {loginError && <div className="login-alert alert alert-danger" role="alert">{loginError}</div>}
 
-                    <Form onSubmit={handleLogin}>
+                    <Form onSubmit={handleLogin} noValidate>
                       {authMode === 'register' && (
                         <>
                           <Form.Group className="mb-3">
@@ -2275,21 +2141,23 @@ export default function App() {
 
                       <Form.Group className="mb-3">
                         <Form.Label>Email address</Form.Label>
-                        <InputGroup>
+                        <InputGroup className={loginFieldErrors.email ? 'has-validation-error' : ''}>
                           <InputGroup.Text className="mail-icon-wrap"><MailIcon /></InputGroup.Text>
-                          <Form.Control type="email" placeholder="you@company.com" value={loginForm.email} onChange={(event) => setLoginForm({ ...loginForm, email: event.target.value })} autoComplete="email" />
+                          <Form.Control type="email" placeholder="you@company.com" value={loginForm.email} onChange={(event) => { setLoginForm({ ...loginForm, email: event.target.value }); setLoginFieldErrors((current) => ({ ...current, email: '' })); setLoginError(''); }} autoComplete="email" aria-invalid={Boolean(loginFieldErrors.email)} aria-describedby={loginFieldErrors.email ? 'login-email-error' : undefined} />
                         </InputGroup>
+                        {loginFieldErrors.email && <div className="login-field-error" id="login-email-error" role="alert">{loginFieldErrors.email}</div>}
                       </Form.Group>
 
                       <Form.Group className="mb-1">
                         <Form.Label>Password</Form.Label>
-                        <InputGroup>
+                        <InputGroup className={`password-input-group ${loginFieldErrors.password ? 'has-validation-error' : ''}`}>
                           <InputGroup.Text className="mail-icon-wrap"><LockIcon /></InputGroup.Text>
-                          <Form.Control type={showPassword ? 'text' : 'password'} placeholder={authMode === 'register' ? 'At least 8 characters' : 'Enter your password'} value={loginForm.password} onChange={(event) => setLoginForm({ ...loginForm, password: event.target.value })} autoComplete={authMode === 'register' ? 'new-password' : 'current-password'} />
+                          <Form.Control type={showPassword ? 'text' : 'password'} placeholder={authMode === 'register' ? 'At least 8 characters' : 'Enter your password'} value={loginForm.password} onChange={(event) => { setLoginForm({ ...loginForm, password: event.target.value }); setLoginFieldErrors((current) => ({ ...current, password: '' })); setLoginError(''); }} autoComplete={authMode === 'register' ? 'new-password' : 'current-password'} aria-invalid={Boolean(loginFieldErrors.password)} aria-describedby={loginFieldErrors.password ? 'login-password-error' : undefined} />
                           <Button type="button" className="password-toggle" onClick={() => setShowPassword((current) => !current)} aria-label={showPassword ? 'Hide password' : 'Show password'}>
                             <EyeIcon />
                           </Button>
                         </InputGroup>
+                        {loginFieldErrors.password && <div className="login-field-error" id="login-password-error" role="alert">{loginFieldErrors.password}</div>}
                       </Form.Group>
 
                       {authMode === 'register' && (
@@ -2326,22 +2194,22 @@ export default function App() {
 
                     <div className="divider">or continue with</div>
 
-                    <div className="social-row">
-                      <Button type="button" className="social-btn" onClick={() => console.log('Google login')}><span className="social-icon">G</span>Google</Button>
-                      <Button type="button" className="social-btn" onClick={() => console.log('Microsoft login')}><span className="social-icon">⊞</span>Microsoft</Button>
-                      <Button type="button" className="social-btn" onClick={() => console.log('Apple login')}><span className="social-icon"></span>Apple</Button>
+                    <div className="social-row" aria-label="Social sign-in options">
+                      <Button type="button" className="social-btn" title="Google sign-in is not configured yet."><span className="social-icon google-icon" aria-hidden="true">G</span>Google</Button>
+                      <Button type="button" className="social-btn" title="Microsoft sign-in is not configured yet."><span className="social-icon microsoft-icon" aria-hidden="true"><i /><i /><i /><i /></span>Microsoft</Button>
+                      <Button type="button" className="social-btn" title="Apple sign-in is not configured yet."><span className="social-icon apple-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M16.4 12.8c0-2.1 1.7-3.1 1.8-3.2a4 4 0 0 0-3.1-1.7c-1.3-.1-2.5.8-3.2.8s-1.7-.8-2.8-.8a4.2 4.2 0 0 0-3.5 2.1c-1.5 2.6-.4 6.5 1.1 8.6.7 1 1.5 2.1 2.6 2.1s1.5-.7 2.8-.7 1.7.7 2.8.7 1.9-1 2.5-2a9 9 0 0 0 1.1-2.2 3.8 3.8 0 0 1-2.1-3.7ZM14.3 6.5A4 4 0 0 0 15.2 3a4.1 4.1 0 0 0-2.7 1.4 3.8 3.8 0 0 0-1 2.9 3.5 3.5 0 0 0 2.8-.8Z" /></svg></span>Apple</Button>
                     </div>
 
                     <div className="signup">
                       {authMode === 'register' ? 'Already have an account?' : "Don't have an account?"}{' '}
-                      <button type="button" className="signup-link" onClick={() => { setAuthMode((current) => current === 'register' ? 'login' : 'register'); setLoginError(''); setLoginForm((current) => ({ ...current, role: current.role || 'Operations Manager' })); }}>
+                      <button type="button" className="signup-link" onClick={() => { setAuthMode((current) => current === 'register' ? 'login' : 'register'); setLoginError(''); setLoginFieldErrors({}); setLoginForm((current) => ({ ...current, role: current.role || 'Operations Manager' })); }}>
                         {authMode === 'register' ? 'Log in' : 'Get started'}
                       </button>
                     </div>
 
                     <div className="security-note">
                       <ShieldIcon />
-                      Your information is secure with us
+                      Demo sign-in · data is stored in this browser
                     </div>
                   </div>
                 </div>
@@ -2388,6 +2256,39 @@ export default function App() {
               --danger: #ff7d7d;
               --danger-soft: rgba(255, 125, 125, 0.14);
               --shadow: 0 18px 32px rgba(6, 12, 20, 0.34);
+            }
+            .theme-dark .section-card,
+            .theme-dark .kpi-card,
+            .theme-dark .feature-card,
+            .theme-dark .warehouse-tile,
+            .theme-dark .action-card {
+              background: linear-gradient(180deg, #17263a 0%, #132033 100%);
+              border-color: rgba(151, 177, 207, 0.24);
+              box-shadow: 0 14px 30px rgba(2, 8, 16, 0.28);
+            }
+            .theme-dark .section-head {
+              border-bottom-color: rgba(151, 177, 207, 0.18);
+            }
+            .theme-dark .table {
+              --bs-table-color: var(--ink);
+              --bs-table-bg: var(--panel);
+              --bs-table-border-color: var(--line);
+              --bs-table-hover-color: #f4f8ff;
+              --bs-table-hover-bg: #1b2b40;
+            }
+            .theme-dark .table > :not(caption) > * > * {
+              color: var(--ink) !important;
+              background-color: var(--panel) !important;
+              border-color: var(--line) !important;
+              box-shadow: none !important;
+            }
+            .theme-dark .table thead th {
+              color: #b8c9de !important;
+              background-color: var(--panel-2) !important;
+            }
+            .theme-dark .table tbody tr:hover > * {
+              color: #f4f8ff !important;
+              background-color: #1b2b40 !important;
             }
             * { box-sizing: border-box; }
             body { margin: 0; background: var(--canvas); color: var(--ink); font-family: Inter, 'Segoe UI', sans-serif; }
@@ -3010,8 +2911,8 @@ export default function App() {
             <div className="workspace-switch">
               <div className="workspace-avatar">N</div>
               <div>
-                <strong>Northstar Supply</strong>
-                <small>Operations workspace</small>
+                <strong>My workspace</strong>
+                <small>Browser-local demo</small>
               </div>
             </div>
             {visibleNavItems.map((group) => (
@@ -3223,7 +3124,7 @@ export default function App() {
                       <ul className="feature-list">
                         <li><span>Which products need restock?</span><span className="mini-tag orange">{lowStockProducts.length}</span></li>
                         <li><span>Where is the most stock held?</span><span className="mini-tag blue">{warehouseList.length}</span></li>
-                        <li><span>How many records changed today?</span><span className="mini-tag green">{docs.length}</span></li>
+                        <li><span>Movement records in log</span><span className="mini-tag green">{docs.length}</span></li>
                       </ul>
                     </div>
                     <div className="feature-card">
@@ -3232,8 +3133,8 @@ export default function App() {
                         <button className="link-button" type="button" onClick={() => setPage('Operations')}>Log</button>
                       </div>
                       <ul className="feature-list">
-                        <li><span>Receipts pending</span><span>{docs.filter((doc) => doc.type === 'Receipt').length}</span></li>
-                        <li><span>Transfers queued</span><span>{docs.filter((doc) => doc.type === 'Internal').length}</span></li>
+                        <li><span>Receipts logged</span><span>{docs.filter((doc) => doc.type === 'Receipt').length}</span></li>
+                        <li><span>Transfers logged</span><span>{docs.filter((doc) => doc.type === 'Internal').length}</span></li>
                         <li><span>Products out of stock</span><span>{outOfStockCount}</span></li>
                       </ul>
                     </div>
@@ -3243,7 +3144,7 @@ export default function App() {
                         <button className="link-button" type="button" onClick={() => setPage('Reports')}>View</button>
                       </div>
                       <ul className="feature-list">
-                        <li><span>Available value</span><span>{moneyFormatter.format(totalInventoryValue)}</span></li>
+                        <li><span>Stock value at listed price</span><span>{moneyFormatter.format(totalInventoryValue)}</span></li>
                         <li><span>Tracked units</span><span>{formatNumber(totalTrackedUnits)}</span></li>
                         <li><span>Product coverage</span><span>{products.length ? `${Math.round((activeProductCount / products.length) * 100)}%` : '0%'}</span></li>
                       </ul>
@@ -3253,7 +3154,7 @@ export default function App() {
                   <div className="grid-3" style={{ marginTop: 16 }}>
                     <div className="feature-card">
                       <div className="feature-head">
-                        <h4>Today's activity</h4>
+                        <h4>Recent activity</h4>
                         <button className="link-button" type="button" onClick={() => setPage('Operations')}>Open</button>
                       </div>
                       <ul className="feature-list">
@@ -3268,10 +3169,10 @@ export default function App() {
                         <button className="link-button" type="button" onClick={() => setPage('Reports')}>Details</button>
                       </div>
                       <ul className="feature-list">
-                        <li><span>Stock availability</span><span>{products.length ? `${Math.max(0, Math.min(100, Math.round(((activeProductCount / products.length) * 100))))}%` : '0%'}</span></li>
-                        <li><span>Inventory accuracy</span><span>{docs.length ? '96%' : '—'}</span></li>
+                        <li><span>Stock availability</span><span>{products.length ? `${Math.max(0, Math.min(100, Math.round(((activeProductCount / products.length) * 100))))}%` : '—'}</span></li>
+                        <li><span>Inventory accuracy</span><span>Not measured</span></li>
                         <li><span>Out of stock</span><span>{outOfStockCount}</span></li>
-                        <li><span>Value at risk</span><span>{moneyFormatter.format(Math.max(0, lowStockProducts.reduce((sum, product) => sum + totalStock(product) * Number(product.price || 0), 0)))}</span></li>
+                        <li><span>Low-stock value at listed price</span><span>{moneyFormatter.format(Math.max(0, lowStockProducts.reduce((sum, product) => sum + totalStock(product) * Number(product.price || 0), 0)))}</span></li>
                       </ul>
                     </div>
                     <div className="feature-card">
@@ -3283,7 +3184,7 @@ export default function App() {
                         <li><span>Receipts</span><span>{currentReceipts}</span></li>
                         <li><span>Transfers</span><span>{docs.filter((doc) => doc.type === 'Internal').length}</span></li>
                         <li><span>Adjustments</span><span>{docs.filter((doc) => doc.type === 'Adjustment').length}</span></li>
-                        <li><span>Invoices due</span><span>{invoices.filter((invoice) => invoice.status === 'Unpaid').length}</span></li>
+                        <li><span>Unpaid invoices</span><span>{invoices.filter((invoice) => invoice.status === 'Unpaid').length}</span></li>
                       </ul>
                     </div>
                   </div>
@@ -3306,7 +3207,7 @@ export default function App() {
                       <Card className="kpi-card">
                         <Card.Body>
                           <div className="kpi-top">
-                            <span className="kpi-label">Inventory value</span>
+                            <span className="kpi-label">Stock value at listed price</span>
                             <span className="kpi-icon icon-blue">$</span>
                           </div>
                           <div className="kpi-value">{new Intl.NumberFormat(undefined, { style: 'currency', currency: settings.currency }).format(totalInventoryValue)}</div>
@@ -3425,7 +3326,7 @@ export default function App() {
                       <div className="page-sub">Track product records, pricing, stock health, and reorder readiness.</div>
                     </div>
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                      <Button variant="outline-secondary" onClick={() => { setImportPreview([]); setImportMessage(''); setModal('import'); }}>Import file</Button>
+                      <Button variant="outline-secondary" onClick={() => { setImportPreview([]); setImportMessage(''); setImportErrors([]); setModal('import'); }}>Import file</Button>
                       <Button variant="success" onClick={openProductModal}>＋ Add product</Button>
                     </div>
                   </div>
@@ -3458,10 +3359,21 @@ export default function App() {
                       </div>
                     </div>
 
+                    {selectedProductIds.length > 0 && (
+                      <div className="section-head" style={{ paddingTop: 10, paddingBottom: 10 }}>
+                        <span className="soft-count" aria-live="polite">{selectedProductIds.length} product{selectedProductIds.length === 1 ? '' : 's'} selected</span>
+                        <div style={{ display: 'flex', gap: 8 }}>
+                          <Button size="sm" variant="outline-secondary" onClick={exportSelectedProducts}>Export selected</Button>
+                          <Button size="sm" variant="outline-secondary" onClick={() => setSelectedProductIds([])}>Clear selection</Button>
+                        </div>
+                      </div>
+                    )}
+
                     <div className="table-responsive">
                       <Table hover>
                         <thead>
                           <tr>
+                            <th><input type="checkbox" aria-label="Select all visible products" checked={filteredProducts.length > 0 && filteredProducts.every((product) => selectedProductIds.includes(String(product.id)))} onChange={toggleVisibleProductSelection} /></th>
                             <th>Product</th>
                             <th>Category</th>
                             <th>Price</th>
@@ -3475,7 +3387,7 @@ export default function App() {
                         <tbody>
                           {filteredProducts.length === 0 ? (
                             <tr>
-                              <td colSpan="8">
+                              <td colSpan="9">
                                 <div className="empty-state">No products match the current filters.</div>
                               </td>
                             </tr>
@@ -3485,6 +3397,7 @@ export default function App() {
                               const status = quantity === 0 ? 'Out of stock' : isLowStock(product, settings.alertRule) ? 'Low stock' : 'Healthy';
                               return (
                                 <tr key={product.id}>
+                                  <td><input type="checkbox" aria-label={`Select ${product.name}`} checked={selectedProductIds.includes(String(product.id))} onChange={() => toggleProductSelection(product.id)} /></td>
                                   <td>
                                     <div className="product-name">{product.name}</div>
                                     <div style={{ color: '#8b9aad', fontSize: 10 }}>{product.sku} · {product.unit}</div>
@@ -3503,6 +3416,7 @@ export default function App() {
                                   </td>
                                   <td>
                                     <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                                      <Button size="sm" variant="outline-secondary" onClick={() => { setProductDetails(product); setModal('product-details'); }}>Details</Button>
                                       <Button size="sm" variant="outline-secondary" onClick={() => editProduct(product)}>Edit</Button>
                                       <Button size="sm" variant="outline-danger" onClick={() => deleteProduct(product)}>Delete</Button>
                                     </div>
@@ -3545,16 +3459,16 @@ export default function App() {
 
                   <Row className="g-3 mb-4">
                     <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Active suppliers</div><div className="kpi-value">{suppliers.length}</div><div className="kpi-foot">Vendors in your network</div></Card.Body></Card></Col>
-                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Avg. lead time</div><div className="kpi-value">{suppliers.length ? Math.round(suppliers.reduce((sum, supplier) => sum + Number(supplier.leadTime || 0), 0) / suppliers.length) : 0}d</div><div className="kpi-foot">Across current supplier records</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Avg. lead time</div><div className="kpi-value">{suppliers.length ? `${Math.round(suppliers.reduce((sum, supplier) => sum + Number(supplier.leadTime || 0), 0) / suppliers.length)}d` : '—'}</div><div className="kpi-foot">Across current supplier records</div></Card.Body></Card></Col>
                     <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Open PO value</div><div className="kpi-value">{moneyFormatter.format(purchaseOrders.filter((order) => order.status !== 'Received').reduce((sum, order) => sum + Number(order.total || 0), 0))}</div><div className="kpi-foot">Current procurement commitments</div></Card.Body></Card></Col>
-                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Top category</div><div className="kpi-value">{suppliers.length ? [...new Set(suppliers.map((supplier) => supplier.category))].sort((a, b) => a.localeCompare(b))[0] || 'General' : '—'}</div><div className="kpi-foot">Primary supply segment</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Top category</div><div className="kpi-value">{suppliers.length ? mostCommonValue(suppliers.map((supplier) => supplier.category)) : '—'}</div><div className="kpi-foot">Primary supply segment</div></Card.Body></Card></Col>
                   </Row>
 
                   <div className="section-card" style={{ marginBottom: 16 }}>
                     <div className="section-head">
                       <div>
                         <h2 className="section-heading">Supplier SLA watchlist</h2>
-                        <div className="section-sub">Delivery risk based on lead time, open purchase commitments, and delayed fulfillment.</div>
+                        <div className="section-sub">Lead-time and open-order signals are shown from saved supplier and purchase-order records. On-time delivery is not measured because shipments are not linked to purchase orders.</div>
                       </div>
                     </div>
                     <div className="table-responsive">
@@ -3578,10 +3492,10 @@ export default function App() {
                               <tr key={supplier.id}>
                                 <td className="product-name">{supplier.name}</td>
                                 <td>{supplier.category}</td>
-                                <td>{supplier.leadTime}d</td>
-                                <td>{Math.round(supplier.onTimeRate)}%</td>
+                                <td>{supplier.leadTime === null ? 'Not recorded' : `${supplier.leadTime}d`}</td>
+                                <td>{supplier.onTimeRate === null ? 'Not measured' : `${Math.round(supplier.onTimeRate)}%`}</td>
                                 <td>{supplier.openOrders}</td>
-                                <td>{supplier.lateShipments}</td>
+                                <td>{supplier.lateShipments === null ? 'Not measured' : supplier.lateShipments}</td>
                                 <td><StatusBadge status={supplier.riskLevel} /></td>
                               </tr>
                             ))
@@ -3619,7 +3533,7 @@ export default function App() {
                                 <td className="product-name">{supplier.name}</td>
                                 <td>{supplier.contact || '—'}</td>
                                 <td>{supplier.category}</td>
-                                <td>{supplier.leadTime} days</td>
+                                <td>{supplier.leadTime === null ? 'Not recorded' : `${supplier.leadTime} days`}</td>
                                 <td>{supplier.email || '—'}</td>
                                 <td>{supplier.phone || '—'}</td>
                               </tr>
@@ -3645,7 +3559,7 @@ export default function App() {
 
                   <Row className="g-3 mb-4">
                     <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Open orders</div><div className="kpi-value">{purchaseOrders.filter((order) => order.status !== 'Received').length}</div><div className="kpi-foot">Orders awaiting receipt</div></Card.Body></Card></Col>
-                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Received this month</div><div className="kpi-value">{purchaseOrders.filter((order) => order.status === 'Received').length}</div><div className="kpi-foot">Completed inbound shipments</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Received orders</div><div className="kpi-value">{purchaseOrders.filter((order) => order.status === 'Received').length}</div><div className="kpi-foot">Purchase orders marked received</div></Card.Body></Card></Col>
                     <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Pending value</div><div className="kpi-value">{moneyFormatter.format(purchaseOrders.filter((order) => order.status !== 'Received').reduce((sum, order) => sum + Number(order.total || 0), 0))}</div><div className="kpi-foot">Committed purchasing spend</div></Card.Body></Card></Col>
                     <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Avg. order cost</div><div className="kpi-value">{purchaseOrders.length ? moneyFormatter.format(purchaseOrders.reduce((sum, order) => sum + Number(order.total || 0), 0) / purchaseOrders.length) : moneyFormatter.format(0)}</div><div className="kpi-foot">Across all purchase orders</div></Card.Body></Card></Col>
                   </Row>
@@ -3654,7 +3568,7 @@ export default function App() {
                     <div className="section-head">
                       <div>
                         <h2 className="section-heading">Recommended replenishment</h2>
-                        <div className="section-sub">Suggested purchase quantities based on stock gap, demand, and supplier lead time.</div>
+                        <div className="section-sub">Gap from current stock to the configured reorder point; no forecast uplift is applied.</div>
                       </div>
                     </div>
                     <div className="table-responsive">
@@ -3664,8 +3578,8 @@ export default function App() {
                             <th>Product</th>
                             <th>On hand</th>
                             <th>Reorder</th>
-                            <th>Demand / 30d</th>
-                            <th>Suggested qty</th>
+                            <th>Fulfilled demand (30d)</th>
+                            <th>Qty to reorder point</th>
                             <th>Supplier</th>
                             <th>Priority</th>
                           </tr>
@@ -3679,7 +3593,7 @@ export default function App() {
                                 <td className="product-name">{item.name}</td>
                                 <td>{formatNumber(item.stock)}</td>
                                 <td>{formatNumber(item.reorder)}</td>
-                                <td>{formatNumber(item.demand)}</td>
+                                <td>{item.demand === null ? 'Unavailable · undated orders' : formatNumber(item.demand)}</td>
                                 <td>{formatNumber(item.recommendedQty)}</td>
                                 <td>{item.supplierName}</td>
                                 <td><StatusBadge status={item.priority === 'Critical' ? 'Critical' : item.priority === 'High' ? 'Waiting' : item.priority === 'Medium' ? 'Scheduled' : 'Done'} /></td>
@@ -3756,8 +3670,8 @@ export default function App() {
                   <Row className="g-3 mb-4">
                     <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Customers</div><div className="kpi-value">{customers.length}</div><div className="kpi-foot">Active customer records</div></Card.Body></Card></Col>
                     <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Orders</div><div className="kpi-value">{salesOrders.length}</div><div className="kpi-foot">Sales orders created</div></Card.Body></Card></Col>
-                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Top region</div><div className="kpi-value">{customers.length ? [...new Set(customers.map((customer) => customer.region))].sort((a, b) => a.localeCompare(b))[0] : '—'}</div><div className="kpi-foot">Highest customer concentration</div></Card.Body></Card></Col>
-                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Revenue</div><div className="kpi-value">{moneyFormatter.format(salesOrders.reduce((sum, order) => sum + Number(order.total || 0), 0))}</div><div className="kpi-foot">Current sales value in the ledger</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Top region</div><div className="kpi-value">{customers.length ? mostCommonValue(customers.map((customer) => customer.region)) : '—'}</div><div className="kpi-foot">Highest customer concentration</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Sales order value</div><div className="kpi-value">{moneyFormatter.format(salesOrders.reduce((sum, order) => sum + Number(order.total || 0), 0))}</div><div className="kpi-foot">Value of recorded orders, including drafts</div></Card.Body></Card></Col>
                   </Row>
 
                   <div className="section-card">
@@ -3803,7 +3717,7 @@ export default function App() {
                     <div className="section-head">
                       <div>
                         <h2 className="section-heading">Account scorecard</h2>
-                        <div className="section-sub">Revenue, order health, and return pressure by customer.</div>
+                        <div className="section-sub">Recorded order values and returns by customer; order value includes drafts.</div>
                       </div>
                     </div>
                     <div className="table-responsive">
@@ -3811,11 +3725,11 @@ export default function App() {
                         <thead>
                           <tr>
                             <th>Customer</th>
-                            <th>Revenue</th>
-                            <th>Margin</th>
-                            <th>Avg. order</th>
-                            <th>Units</th>
-                            <th>Return rate</th>
+                            <th>Sales order value</th>
+                            <th>Margin (not tracked)</th>
+                            <th>Avg. order value</th>
+                            <th>Units shipped</th>
+                            <th>Returns in workflow</th>
                             <th>Health</th>
                           </tr>
                         </thead>
@@ -3827,10 +3741,10 @@ export default function App() {
                               <tr key={customer.id}>
                                 <td className="product-name">{customer.name}</td>
                                 <td>{moneyFormatter.format(customer.revenue)}</td>
-                                <td>{moneyFormatter.format(customer.margin)}</td>
+                                <td>Not tracked</td>
                                 <td>{moneyFormatter.format(customer.avgOrderValue)}</td>
                                 <td>{formatNumber(customer.units)}</td>
-                                <td>{`${Math.round(customer.returnRate)}%`}</td>
+                                <td>{formatNumber(customer.returnedUnits)}</td>
                                 <td><StatusBadge status={customer.accountHealth} /></td>
                               </tr>
                             ))
@@ -3974,14 +3888,14 @@ export default function App() {
                       <h1 className="page-head">Return processing</h1>
                       <div className="page-sub">Track customer returns, restock adjustments, and exception handling.</div>
                     </div>
-                    <Button variant="success" onClick={() => { setReturnForm({ orderId: salesOrders[0]?.id || '', customerId: customers[0]?.id || '', productId: products[0]?.id || '', qty: '1', reason: 'Damaged', location: warehouseList[0] || '' }); setModal('return'); }}>＋ Process return</Button>
+                    <Button variant="success" onClick={() => { setReturnForm({ orderId: returnableSalesOrders[0]?.id || '', customerId: returnableSalesOrders[0]?.customerId || '', productId: returnableSalesOrders[0]?.productId || '', qty: '1', reason: 'Damaged', location: returnableSalesOrders[0]?.location || warehouseList[0] || '' }); setModal('return'); }}>＋ Process return</Button>
                   </div>
 
                   <Row className="g-3 mb-4">
                     <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Open returns</div><div className="kpi-value">{returns.filter((item) => item.status === 'Pending').length}</div><div className="kpi-foot">Awaiting review</div></Card.Body></Card></Col>
                     <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Approved</div><div className="kpi-value">{returns.filter((item) => item.status === 'Approved').length}</div><div className="kpi-foot">Returned to inventory</div></Card.Body></Card></Col>
-                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Units returned</div><div className="kpi-value">{formatNumber(returns.reduce((sum, item) => sum + Number(item.qty || 0), 0))}</div><div className="kpi-foot">Total units in return flow</div></Card.Body></Card></Col>
-                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Most frequent reason</div><div className="kpi-value">{returns.length ? [...new Set(returns.map((item) => item.reason))].sort((a, b) => a.localeCompare(b))[0] : '—'}</div><div className="kpi-foot">Returned product issue</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Units in return flow</div><div className="kpi-value">{formatNumber(returns.filter((item) => item.status !== 'Rejected').reduce((sum, item) => sum + Number(item.qty || 0), 0))}</div><div className="kpi-foot">Pending and approved return quantities</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Most frequent reason</div><div className="kpi-value">{returns.length ? mostCommonValue(returns.filter((item) => item.status !== 'Rejected').map((item) => item.reason)) || '—' : '—'}</div><div className="kpi-foot">Returned product issue</div></Card.Body></Card></Col>
                   </Row>
 
                   <div className="section-card">
@@ -4270,7 +4184,7 @@ export default function App() {
                                 <td>{entry.actor}</td>
                                 <td><span className="ref-code">{entry.reference}</span></td>
                                 <td><StatusBadge status={entry.status} /></td>
-                                <td>{entry.amount ? (typeof entry.amount === 'number' ? moneyFormatter.format(entry.amount) : formatNumber(entry.amount)) : '—'}</td>
+                                <td>{entry.amount === null || entry.amount === undefined ? '—' : entry.amountType === 'currency' ? moneyFormatter.format(entry.amount) : formatNumber(entry.amount)}</td>
                               </tr>
                             ))
                           )}
@@ -4286,15 +4200,15 @@ export default function App() {
                   <div className="page-row">
                     <div>
                       <div className="eyebrow">Planning</div>
-                      <h1 className="page-head">Forecasting & risk</h1>
-                      <div className="page-sub">Use current stock, demand patterns, and replenishment risk to prioritize action before shortages or excess inventory appear.</div>
+                      <h1 className="page-head">Inventory risk & demand signals</h1>
+                      <div className="page-sub">Compare on-hand stock with configured reorder points and dated fulfilled orders. Validated demand forecasting is not available yet.</div>
                     </div>
                   </div>
 
                   <Row className="g-3 mb-4">
                     <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">At risk</div><div className="kpi-value">{forecastSignals.filter((item) => item.risk === 'Critical' || item.risk === 'Watch').length}</div><div className="kpi-foot">Items needing action this cycle</div></Card.Body></Card></Col>
                     <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Excess stock</div><div className="kpi-value">{forecastSignals.filter((item) => item.risk === 'Excess').length}</div><div className="kpi-foot">Products above normal coverage</div></Card.Body></Card></Col>
-                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Avg. coverage</div><div className="kpi-value">{forecastSignals.length ? `${Math.round(forecastSignals.reduce((sum, item) => sum + (Number.isFinite(item.coverageDays) ? item.coverageDays : 0), 0) / forecastSignals.length)}d` : '0d'}</div><div className="kpi-foot">Projected days of supply</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Avg. coverage</div><div className="kpi-value">{averageCoverageDays === null ? '—' : `${Math.round(averageCoverageDays)}d`}</div><div className="kpi-foot">Based on dated fulfilled sales in the last 30 days</div></Card.Body></Card></Col>
                     <Col sm={6} xl={3}><Card className="kpi-card"><Card.Body><div className="kpi-label">Net flow</div><div className="kpi-value">{formatNumber(forecastSignals.reduce((sum, item) => sum + Number(item.netMovement || 0), 0))}</div><div className="kpi-foot">Net inbound minus outbound units</div></Card.Body></Card></Col>
                   </Row>
 
@@ -4302,7 +4216,7 @@ export default function App() {
                     <div className="section-head">
                       <div>
                         <h2 className="section-heading">Risk overview</h2>
-                        <div className="section-sub">Priority list built from current stock, reorder point, and demand trend.</div>
+                        <div className="section-sub">Stock risk is based on recorded on-hand quantity versus each product’s configured reorder point. No demand forecast is inferred from undated history.</div>
                       </div>
                     </div>
                     <div className="table-responsive">
@@ -4327,7 +4241,7 @@ export default function App() {
                                 <td className="product-name">{item.name}</td>
                                 <td>{formatNumber(item.stock)}</td>
                                 <td>{formatNumber(item.reorder)}</td>
-                                <td>{formatNumber(item.demand)}</td>
+                                <td>{item.demand === null ? 'Unavailable · undated orders' : formatNumber(item.demand)}</td>
                                 <td>{Number.isFinite(item.coverageDays) ? `${Math.round(item.coverageDays)}d` : '—'}</td>
                                 <td><StatusBadge status={item.risk} /></td>
                                 <td>{item.recommendation}</td>
@@ -4343,7 +4257,7 @@ export default function App() {
                     <div className="section-head">
                       <div>
                         <h2 className="section-heading">Safety stock policy</h2>
-                        <div className="section-sub">Calculated protection level to cover demand variability and supplier lead-time exposure.</div>
+                        <div className="section-sub">Safety-stock estimates are withheld until dated fulfilled sales and a product-linked supplier lead time are available.</div>
                       </div>
                     </div>
                     <div className="table-responsive">
@@ -4361,7 +4275,7 @@ export default function App() {
                         </thead>
                         <tbody>
                           {safetyStockRecommendations.length === 0 ? (
-                            <tr><td colSpan="7"><div className="empty-state">No safety stock policy data is available yet.</div></td></tr>
+                            <tr><td colSpan="7"><div className="empty-state">No validated safety-stock recommendations are available. Add dated fulfilled orders and link products to suppliers before using demand-based estimates.</div></td></tr>
                           ) : (
                             safetyStockRecommendations.map((item) => (
                               <tr key={item.id}>
@@ -4383,8 +4297,8 @@ export default function App() {
                   <div className="section-card" style={{ marginTop: 16 }}>
                     <div className="section-head">
                       <div>
-                        <h2 className="section-heading">ABC demand segmentation</h2>
-                        <div className="section-sub">Prioritize inventory attention by sales contribution and operational importance.</div>
+                        <h2 className="section-heading">ABC shipped-order-value segmentation</h2>
+                        <div className="section-sub">Contribution is calculated from shipped sales orders only; draft and confirmed orders are excluded.</div>
                       </div>
                     </div>
                     <div className="table-responsive">
@@ -4392,8 +4306,8 @@ export default function App() {
                         <thead>
                           <tr>
                             <th>Product</th>
-                            <th>Revenue</th>
-                            <th>Units sold</th>
+                            <th>Shipped order value</th>
+                            <th>Units shipped</th>
                             <th>Contribution</th>
                             <th>Cumulative</th>
                             <th>Class</th>
@@ -4406,7 +4320,7 @@ export default function App() {
                             abcSegmentation.map((item) => (
                               <tr key={item.id}>
                                 <td className="product-name">{item.name}</td>
-                                <td>{moneyFormatter.format(item.revenue)}</td>
+                                <td>{moneyFormatter.format(item.shippedOrderValue)}</td>
                                 <td>{formatNumber(item.units)}</td>
                                 <td>{`${Math.round(item.contributionPct)}%`}</td>
                                 <td>{`${Math.round(item.cumulativePct)}%`}</td>
@@ -4488,7 +4402,7 @@ export default function App() {
                       <div className="page-sub">Review stock performance, product distribution, and current inventory health.</div>
                     </div>
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                      <Button variant="outline-secondary" onClick={() => downloadCsv('stockwise-products.csv', [['Name', 'SKU', 'Category', 'Price', 'Unit', 'Reorder', ...warehouseList], ...products.map((product) => [product.name, product.sku, product.category, product.price, product.unit, product.reorder, ...warehouseList.map((location) => product.stock?.[location] || 0)])])}>Export products</Button>
+                      <Button variant="outline-secondary" onClick={() => downloadCsv('stockwise-products.csv', [['Name', 'SKU', 'Category', 'Preferred supplier', 'Price', 'Unit', 'Reorder', ...warehouseList], ...products.map((product) => [product.name, product.sku, product.category, product.supplierName || suppliers.find((supplier) => String(supplier.id) === String(product.supplierId))?.name || '', product.price, product.unit, product.reorder, ...warehouseList.map((location) => product.stock?.[location] || 0)])])}>Export products</Button>
                       <Button variant="success" onClick={() => downloadCsv('stockwise-operations.csv', [['Reference', 'Type', 'Product', 'Qty', 'Location', 'Partner', 'Status', 'Actor', 'Date'], ...docs.map((doc) => [doc.id, doc.type, doc.product, doc.qty, doc.location, doc.partner || '', doc.status, doc.actor || '', doc.date])])}>Export activity</Button>
                     </div>
                   </div>
@@ -4560,22 +4474,10 @@ export default function App() {
                     <div className="section-head">
                       <div>
                         <h2 className="section-heading">Planning variance board</h2>
-                        <div className="section-sub">Compare expected operational targets to actual flow across sales, stock, and procurement.</div>
+                        <div className="section-sub">Plan comparisons are hidden until organization targets are configured.</div>
                       </div>
                     </div>
-                    <Row className="g-3 mb-3">
-                      {planVariance.map((signal) => (
-                        <Col sm={6} xl={4} key={signal.label}>
-                          <Card className="kpi-card">
-                            <Card.Body>
-                              <div className="kpi-label">{signal.label}</div>
-                              <div className="kpi-value">{signal.value}</div>
-                              <div className="kpi-foot"><StatusBadge status={signal.status} /></div>
-                            </Card.Body>
-                          </Card>
-                        </Col>
-                      ))}
-                    </Row>
+                    <div className="empty-state">No planning targets are configured, so no variance is calculated.</div>
                   </div>
 
                   <div className="section-card" style={{ marginBottom: 16 }}>
@@ -4603,14 +4505,14 @@ export default function App() {
                       <Col sm={6} xl={3}>
                         <Card className="kpi-card"><Card.Body>
                           <div className="kpi-label">Collection rate</div>
-                          <div className="kpi-value">{Math.round(cashCycle.collectionCycle)}%</div>
-                          <div className="kpi-foot">Cash conversion efficiency</div>
+                          <div className="kpi-value">Not available</div>
+                          <div className="kpi-foot">Payments are not linked to sales orders</div>
                         </Card.Body></Card>
                       </Col>
                       <Col sm={6} xl={3}>
                         <Card className="kpi-card"><Card.Body>
-                          <div className="kpi-label">Supplier lead</div>
-                          <div className="kpi-value">{Math.round(cashCycle.supplierLeadAverage || 0)}d</div>
+                          <div className="kpi-label">Avg. supplier lead time</div>
+                          <div className="kpi-value">{cashCycle.supplierLeadAverage === null ? '—' : `${Math.round(cashCycle.supplierLeadAverage)}d`}</div>
                           <div className="kpi-foot"><StatusBadge status={cashCycle.serviceHealth} /></div>
                         </Card.Body></Card>
                       </Col>
@@ -4630,7 +4532,7 @@ export default function App() {
                           <tr>
                             <th>Product</th>
                             <th>On hand</th>
-                            <th>Demand</th>
+                            <th>Units shipped</th>
                             <th>Last movement</th>
                             <th>Health</th>
                           </tr>
@@ -4644,7 +4546,7 @@ export default function App() {
                                 <td className="product-name">{item.name}</td>
                                 <td>{formatNumber(item.stock)}</td>
                                 <td>{formatNumber(item.demand)}</td>
-                                <td>{item.ageDays}d</td>
+                                <td>{item.ageDays === null ? 'Not recorded' : `${item.ageDays}d`}</td>
                                 <td><StatusBadge status={item.agingStatus} /></td>
                               </tr>
                             ))
@@ -4658,7 +4560,7 @@ export default function App() {
                     <div className="section-head">
                       <div>
                         <h2 className="section-heading">Replenishment coverage board</h2>
-                        <div className="section-sub">Plan reorder timing based on recent demand and supplier lead time.</div>
+                        <div className="section-sub">Days of cover uses fulfilled unit demand recorded in the last 30 days; supplier lead time is shown only when linked to the product.</div>
                       </div>
                     </div>
                     <div className="table-responsive">
@@ -4681,9 +4583,9 @@ export default function App() {
                               <tr key={item.id}>
                                 <td className="product-name">{item.name}</td>
                                 <td>{formatNumber(item.stock)}</td>
-                                <td>{item.avgDailyDemand > 0 ? item.avgDailyDemand.toFixed(1) : '0.0'}</td>
-                                <td>{Number.isFinite(item.daysCover) ? `${Math.round(item.daysCover)}d` : 'No demand'}</td>
-                                <td>{item.supplierLead}d</td>
+                                <td>{item.avgDailyDemand === null ? '—' : item.avgDailyDemand.toFixed(1)}</td>
+                                <td>{Number.isFinite(item.daysCover) ? `${Math.round(item.daysCover)}d` : item.hasUndatedDemand ? 'Unavailable · undated orders' : 'No recent demand'}</td>
+                                <td>{item.supplierLead === null ? 'Not linked' : `${item.supplierLead}d`}</td>
                                 <td><StatusBadge status={item.coverStatus} /></td>
                               </tr>
                             ))
@@ -4719,8 +4621,8 @@ export default function App() {
                             supplierRiskBoard.map((supplier) => (
                               <tr key={supplier.id}>
                                 <td className="product-name">{supplier.name}</td>
-                                <td>{Math.round(supplier.onTimeRate || 0)}%</td>
-                                <td>{supplier.leadTime}d</td>
+                                <td>{supplier.onTimeRate === null ? 'Not measured' : `${Math.round(supplier.onTimeRate)}%`}</td>
+                                <td>{supplier.leadTime === null ? 'Not recorded' : `${supplier.leadTime}d`}</td>
                                 <td>{supplier.openOrders}</td>
                                 <td>{moneyFormatter.format(supplier.openValue)}</td>
                                 <td><StatusBadge status={supplier.riskLevel} /></td>
@@ -4753,7 +4655,7 @@ export default function App() {
                         </thead>
                         <tbody>
                           {marginSignals.length === 0 ? (
-                            <tr><td colSpan="6"><div className="empty-state">No product margin signals are available.</div></td></tr>
+                            <tr><td colSpan="6"><div className="empty-state">Margin data is unavailable because product unit costs are not recorded. Add verified unit costs before using margin analysis.</div></td></tr>
                           ) : (
                             marginSignals.map((item) => (
                               <tr key={item.id}>
@@ -4785,7 +4687,7 @@ export default function App() {
                   </div>
 
                   <Row className="g-3 mb-4">
-                    <Col sm={6} xl={4}><Card className="kpi-card"><Card.Body><div className="kpi-label">Receivables</div><div className="kpi-value">{new Intl.NumberFormat(undefined, { style: 'currency', currency: settings.currency }).format(invoices.filter((item) => item.kind === 'Invoice' && item.status === 'Unpaid').reduce((sum, item) => sum + item.amount, 0))}</div><div className="kpi-foot">Outstanding customer invoices</div></Card.Body></Card></Col>
+                    <Col sm={6} xl={4}><Card className="kpi-card"><Card.Body><div className="kpi-label">Receivables</div><div className="kpi-value">{new Intl.NumberFormat(undefined, { style: 'currency', currency: settings.currency }).format(outstandingInvoiceTotal)}</div><div className="kpi-foot">Outstanding customer invoices</div></Card.Body></Card></Col>
                     <Col sm={6} xl={4}><Card className="kpi-card"><Card.Body><div className="kpi-label">Payables</div><div className="kpi-value">{new Intl.NumberFormat(undefined, { style: 'currency', currency: settings.currency }).format(invoices.filter((item) => item.kind === 'Bill' && item.status === 'Unpaid').reduce((sum, item) => sum + item.amount, 0))}</div><div className="kpi-foot">Outstanding supplier bills</div></Card.Body></Card></Col>
                     <Col sm={6} xl={4}><Card className="kpi-card"><Card.Body><div className="kpi-label">Collections</div><div className="kpi-value">{new Intl.NumberFormat(undefined, { style: 'currency', currency: settings.currency }).format(payments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0))}</div><div className="kpi-foot">Cash received in the current ledger</div></Card.Body></Card></Col>
                   </Row>
@@ -4978,6 +4880,50 @@ export default function App() {
             </Form>
           </Modal>
 
+          <Modal show={modal === 'product-details'} onHide={() => { setModal(''); setProductDetails(null); }} centered>
+            <Modal.Header closeButton>
+              <Modal.Title>{productDetails?.name || 'Product details'}</Modal.Title>
+            </Modal.Header>
+            <Modal.Body>
+              {productDetails && (
+                <>
+                  <Row className="g-3 mb-3">
+                    <Col xs={6}><div className="kpi-label">SKU</div><strong>{productDetails.sku}</strong></Col>
+                    <Col xs={6}><div className="kpi-label">Category</div><strong>{productDetails.category}</strong></Col>
+                    <Col xs={6}><div className="kpi-label">Preferred supplier</div><strong>{productDetails.supplierName || suppliers.find((supplier) => String(supplier.id) === String(productDetails.supplierId))?.name || 'Not assigned'}</strong></Col>
+                    <Col xs={6}><div className="kpi-label">Material</div><strong>{productDetails.material || 'Not specified'}</strong></Col>
+                    <Col xs={6}><div className="kpi-label">Listed price</div><strong>{moneyFormatter.format(Number(productDetails.price || 0))} / {productDetails.unit}</strong></Col>
+                    <Col xs={6}><div className="kpi-label">Total on hand</div><strong>{formatNumber(totalStock(productDetails))} {productDetails.unit}</strong></Col>
+                    <Col xs={6}><div className="kpi-label">Reorder point</div><strong>{formatNumber(productDetails.reorder)} {productDetails.unit}</strong></Col>
+                  </Row>
+                  <div className="section-card" style={{ boxShadow: 'none' }}>
+                    <div className="section-head">
+                      <h3 className="section-heading">Stock by location</h3>
+                      <StatusBadge status={totalStock(productDetails) === 0 ? 'Out of stock' : isLowStock(productDetails, settings.alertRule) ? 'Low stock' : 'Healthy'} />
+                    </div>
+                    <div className="table-responsive">
+                      <Table size="sm">
+                        <thead><tr><th>Location</th><th>On hand</th></tr></thead>
+                        <tbody>
+                          {warehouseList.map((location) => (
+                            <tr key={location}>
+                              <td>{location}</td>
+                              <td>{formatNumber(productDetails.stock?.[location] || 0)} {productDetails.unit}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </Table>
+                    </div>
+                  </div>
+                </>
+              )}
+            </Modal.Body>
+            <Modal.Footer>
+              <Button variant="light" onClick={() => { setModal(''); setProductDetails(null); }}>Close</Button>
+              {productDetails && <Button variant="success" onClick={() => editProduct(productDetails)}>Edit product</Button>}
+            </Modal.Footer>
+          </Modal>
+
           <Modal show={modal === 'product'} onHide={() => setModal('')} centered>
             <Form onSubmit={saveProduct}>
               <Modal.Header closeButton>
@@ -4997,6 +4943,13 @@ export default function App() {
                     <Form.Label>Category</Form.Label>
                     <Form.Select value={productForm.category} onChange={(event) => setProductForm({ ...productForm, category: event.target.value })}>
                       {['Raw Materials', 'Furniture', 'Safety', 'Packaging', 'Electrical', 'Finished Goods', 'Other'].map((category) => <option key={category}>{category}</option>)}
+                    </Form.Select>
+                  </Col>
+                  <Col sm={6}>
+                    <Form.Label>Preferred supplier</Form.Label>
+                    <Form.Select value={productForm.supplierId} onChange={(event) => setProductForm({ ...productForm, supplierId: event.target.value })}>
+                      <option value="">No supplier assigned</option>
+                      {suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}
                     </Form.Select>
                   </Col>
                   <Col sm={6}>
@@ -5344,18 +5297,22 @@ export default function App() {
                   <Col sm={6}>
                     <Form.Label>Order</Form.Label>
                     <Form.Select value={returnForm.orderId} onChange={(event) => {
-                      const selectedOrder = salesOrders.find((order) => String(order.id) === String(event.target.value));
+                      const selectedOrder = returnableSalesOrders.find((order) => String(order.id) === String(event.target.value));
+                      const alreadyReturned = returns
+                        .filter((item) => item.orderId === selectedOrder?.id && item.status !== 'Rejected')
+                        .reduce((sum, item) => sum + Number(item.qty || 0), 0);
+                      const remainingQty = Math.max(Number(selectedOrder?.qty || 0) - alreadyReturned, 0);
                       setReturnForm({
                         ...returnForm,
                         orderId: event.target.value,
                         customerId: selectedOrder?.customerId || returnForm.customerId,
                         productId: selectedOrder?.productId || returnForm.productId,
-                        qty: String(selectedOrder?.qty || returnForm.qty || '1'),
+                        qty: selectedOrder ? String(remainingQty) : '1',
                         location: selectedOrder?.location || returnForm.location,
                       });
                     }}>
                       <option value="">Select order</option>
-                      {salesOrders.map((order) => <option key={order.id} value={order.id}>{order.id}</option>)}
+                      {returnableSalesOrders.map((order) => <option key={order.id} value={order.id}>{order.id} · {order.customerName}</option>)}
                     </Form.Select>
                   </Col>
                   <Col sm={6}>
@@ -5441,10 +5398,29 @@ export default function App() {
             </Modal.Header>
             <Modal.Body>
               <p style={{ marginTop: 0, color: '#60768d', fontSize: 12 }}>
-                Import CSV, TSV, TXT tables, or JSON lists. The demo stores data locally in this browser and skips duplicate SKUs.
+                Import CSV, TSV, TXT tables, or JSON lists. Use a price or unitprice field for the product’s listed price; purchase costs are not mapped to it. A supplier, vendor, or preferred supplier field is matched to existing suppliers by name. Data is stored locally in this browser and duplicate SKUs are skipped.
               </p>
               <Form.Control type="file" accept=".csv,.tsv,.txt,.json" multiple onChange={(event) => { previewImport(event.target.files); event.target.value = ''; }} />
-              {importMessage && <div className="inventory-alert" style={{ marginTop: 14 }}>{importMessage}</div>}
+              {importMessage && <div className="inventory-alert" style={{ marginTop: 14 }} role="status">{importMessage}</div>}
+              {importErrors.length > 0 && (
+                <div style={{ marginTop: 14 }}>
+                  <strong style={{ fontSize: 12 }}>Import issues ({importErrors.length})</strong>
+                  <div className="table-responsive" style={{ maxHeight: 180, marginTop: 8 }}>
+                    <Table size="sm">
+                      <thead><tr><th>File</th><th>Row</th><th>Issue</th></tr></thead>
+                      <tbody>
+                        {importErrors.map((error, index) => (
+                          <tr key={`${error.file}-${error.row}-${index}`}>
+                            <td>{error.file}</td>
+                            <td>{error.row}</td>
+                            <td>{error.issue}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </Table>
+                  </div>
+                </div>
+              )}
               {importPreview.length > 0 && (
                 <div style={{ marginTop: 12 }}>
                   <strong style={{ fontSize: 12 }}>Preview</strong>
@@ -5454,6 +5430,7 @@ export default function App() {
                         <tr>
                           <th>Name</th>
                           <th>SKU</th>
+                          <th>Supplier</th>
                           <th>Qty</th>
                           <th>Price</th>
                         </tr>
@@ -5463,6 +5440,7 @@ export default function App() {
                           <tr key={`${item.sku}-${index}`}>
                             <td>{item.name}</td>
                             <td>{item.sku}</td>
+                            <td>{item.supplierName || '—'}</td>
                             <td>{item.quantity}</td>
                             <td>{new Intl.NumberFormat(undefined, { style: 'currency', currency: settings.currency }).format(item.price)}</td>
                           </tr>

@@ -1,0 +1,51 @@
+:root {
+  --sw-color-primary: #1769ff;
+  --sw-color-secondary: #633cff;
+  --sw-color-success: #1d8a68;
+  --sw-color-warning: #d98712;
+  --sw-color-danger: #d95b5b;
+  --sw-color-info: #4d69ff;
+  --sw-color-background: #edf3f8;
+  --sw-color-surface: #ffffff;
+  --sw-color-surface-raised: #f7fafc;
+  --sw-color-border: rgba(97, 118, 146, 0.16);
+  --sw-color-text: #172b4d;
+  --sw-color-text-muted: #63768d;
+  --sw-color-disabled: #9aa8b8;
+
+  --sw-space-1: 4px;
+  --sw-space-2: 8px;
+  --sw-space-3: 12px;
+  --sw-space-4: 16px;
+  --sw-space-5: 24px;
+  --sw-space-6: 32px;
+  --sw-space-7: 48px;
+
+  --sw-radius-sm: 6px;
+  --sw-radius-md: 10px;
+  --sw-radius-lg: 16px;
+  --sw-radius-pill: 999px;
+
+  --sw-shadow-sm: 0 2px 8px rgba(15, 28, 42, 0.06);
+  --sw-shadow-md: 0 12px 28px rgba(15, 28, 42, 0.10);
+  --sw-focus-ring: 0 0 0 3px rgba(23, 105, 255, 0.24);
+  --sw-motion-fast: 140ms ease;
+  --sw-motion-normal: 200ms ease;
+}
+
+.theme-dark {
+  --sw-color-background: #0b121c;
+  --sw-color-surface: #111c2d;
+  --sw-color-surface-raised: #17263b;
+  --sw-color-border: rgba(144, 166, 191, 0.14);
+  --sw-color-text: #ecf4ff;
+  --sw-color-text-muted: #8ea3ba;
+  --sw-color-disabled: #66788d;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --sw-motion-fast: 0ms;
+    --sw-motion-normal: 0ms;
+  }
+}

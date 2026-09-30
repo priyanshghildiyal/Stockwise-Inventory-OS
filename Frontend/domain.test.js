@@ -5,6 +5,7 @@ import {
   getShipmentBlockReason,
   getInvoiceOutstanding,
   normalizeImportedProduct,
+  renameWarehouseInOperation,
 } from './domain.js';
 
 test('stock receipt and delivery apply exact signed quantities', () => {
@@ -38,6 +39,19 @@ test('stock counts set absolute quantity and invalid operations do not mutate sa
   }).error, 'Choose a different destination for an internal transfer.');
 });
 
+test('warehouse rename changes transfer endpoints without changing partner references', () => {
+  const receipt = { type: 'Receipt', location: 'Main Warehouse', partner: 'Main Warehouse Supply' };
+  const transfer = { type: 'Internal', location: 'Main Warehouse', partner: 'Main Warehouse → Overflow' };
+
+  assert.deepEqual(renameWarehouseInOperation(receipt, 'Main Warehouse', 'Central'), {
+    type: 'Receipt', location: 'Central', partner: 'Main Warehouse Supply',
+  });
+  assert.deepEqual(renameWarehouseInOperation(transfer, 'Main Warehouse', 'Central'), {
+    type: 'Internal', location: 'Central', partner: 'Central → Overflow',
+  });
+  assert.equal(receipt.location, 'Main Warehouse');
+});
+
 test('shipment validation blocks missing, shipped, duplicate, and empty orders', () => {
   assert.ok(getShipmentBlockReason(null).includes('Select a valid'));
   assert.ok(getShipmentBlockReason({ id: 'SO-1', status: 'Shipped', qty: 2 }).includes('already been shipped'));
@@ -56,7 +70,7 @@ test('import normalization accepts supported aliases and rejects invalid rows', 
   assert.deepEqual(normalizeImportedProduct({
     product: '  Cable  ', code: ' cb-1 ', onhand: '12', unitprice: '3.5', minimumstock: '4', uom: 'meters',
   }), {
-    name: 'Cable', sku: 'CB-1', material: '', supplierName: '', category: 'Other', unit: 'meters', quantity: 12, price: 3.5, reorder: 4,
+    name: 'Cable', sku: 'CB-1', barcode: '', description: '', material: '', supplierName: '', category: 'Other', unit: 'meters', quantity: 12, price: 3.5, reorder: 4,
   });
   assert.equal(normalizeImportedProduct({ name: 'Bolt', sku: 'B-1', preferredsupplier: 'Apex' }).supplierName, 'Apex');
   assert.equal(normalizeImportedProduct({ name: 'Missing SKU' }), null);

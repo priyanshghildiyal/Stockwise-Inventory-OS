@@ -27,6 +27,14 @@ export const applyInventoryOperation = (stockByLocation, { type, quantity, locat
   return { stock: nextStock, error: null };
 };
 
+export const renameWarehouseInOperation = (operation, currentName, nextName) => ({
+  ...operation,
+  location: operation.location === currentName ? nextName : operation.location,
+  partner: operation.type === 'Internal'
+    ? String(operation.partner || '').split(' → ').map((location) => location === currentName ? nextName : location).join(' → ')
+    : operation.partner,
+});
+
 export { getShipmentBlockReason } from './services/orders.js';
 export { getInvoiceOutstanding } from './services/billing.js';
 
@@ -42,6 +50,8 @@ export const normalizeImportedProduct = (record, defaultUnit = 'units') => {
   return {
     name,
     sku,
+    barcode: String(record.barcode || record.gtin || record.ean || '').trim(),
+    description: String(record.description || record.details || '').trim(),
     material: String(record.material || record.composition || '').trim(),
     supplierName: String(record.suppliername || record.supplierName || record.preferredsupplier || record.preferredSupplier || record.supplier || record.vendorname || record.vendorName || record.vendor || '').trim(),
     category: String(record.category || 'Other').trim() || 'Other',

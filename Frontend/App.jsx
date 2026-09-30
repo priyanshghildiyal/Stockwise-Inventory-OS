@@ -2,7 +2,7 @@ import React from 'react';
 import 'bootstrap/dist/css/bootstrap.min.css';
 import './login.css';
 import { readLocal, writeLocal, removeLocal, readSession, writeSession, removeSession, sanitizeStoredArray } from './storage.js';
-import { applyInventoryOperation } from './domain.js';
+import { applyInventoryOperation, renameWarehouseInOperation } from './domain.js';
 import { deductShipmentStock, getShipmentBlockReason } from './services/orders.js';
 import { getInvoiceOutstanding, getPaymentValidationError } from './services/billing.js';
 import { validateLoginCredentials } from './services/auth.js';
@@ -333,10 +333,15 @@ export default function App() {
   const [importPreview, setImportPreview] = React.useState([]);
   const [importMessage, setImportMessage] = React.useState('');
   const [importErrors, setImportErrors] = React.useState([]);
+  const [importSources, setImportSources] = React.useState([]);
+  const [importHeaders, setImportHeaders] = React.useState([]);
+  const [importColumnMapping, setImportColumnMapping] = React.useState({});
   const [productForm, setProductForm] = React.useState({
     id: null,
     name: '',
     sku: '',
+    barcode: '',
+    description: '',
     category: 'Raw Materials',
     supplierId: '',
     material: '',
@@ -364,6 +369,7 @@ export default function App() {
   const [categoryFilter, setCategoryFilter] = React.useState('All');
   const [productSort, setProductSort] = React.useState('name-asc');
   const [selectedProductIds, setSelectedProductIds] = React.useState([]);
+  const [bulkCategory, setBulkCategory] = React.useState('');
   const [productDetails, setProductDetails] = React.useState(null);
 
   React.useEffect(() => {
@@ -515,6 +521,8 @@ export default function App() {
       id: null,
       name: '',
       sku: '',
+      barcode: '',
+      description: '',
       category: 'Raw Materials',
       supplierId: '',
       material: '',
@@ -531,6 +539,8 @@ export default function App() {
       id: product.id,
       name: product.name,
       sku: product.sku,
+      barcode: product.barcode || '',
+      description: product.description || '',
       category: product.category,
       supplierId: String(product.supplierId || suppliers.find((supplier) => supplier.name === product.supplierName)?.id || ''),
       material: product.material || '',
@@ -565,6 +575,8 @@ export default function App() {
       id: productForm.id ?? Date.now(),
       name,
       sku,
+      barcode: productForm.barcode.trim(),
+      description: productForm.description.trim(),
       category: productForm.category,
       supplierId: productForm.supplierId || '',
       supplierName: suppliers.find((supplier) => String(supplier.id) === String(productForm.supplierId))?.name || '',
@@ -616,6 +628,16 @@ export default function App() {
         ? current.filter((id) => !visibleIds.includes(id))
         : [...new Set([...current, ...visibleIds])]
     ));
+  };
+
+  const updateSelectedCategory = () => {
+    if (!bulkCategory) return;
+    const selectedIds = new Set(selectedProductIds);
+    setProducts((current) => current.map((product) => (
+      selectedIds.has(String(product.id)) ? { ...product, category: bulkCategory } : product
+    )));
+    setSelectedProductIds([]);
+    showToast(`Category updated for ${selectedIds.size} products.`);
   };
 
   const exportSelectedProducts = () => {
@@ -765,11 +787,7 @@ export default function App() {
       }
       return { ...product, stock };
     }));
-    setDocs((current) => current.map((doc) => ({
-      ...doc,
-      location: doc.location === renameTarget ? nextName : doc.location,
-      partner: String(doc.partner || '').replaceAll(renameTarget, nextName),
-    })));
+    setDocs((current) => current.map((doc) => renameWarehouseInOperation(doc, renameTarget, nextName)));
     setReturns((current) => current.map((item) => ({ ...item, location: item.location === renameTarget ? nextName : item.location })));
     setPurchaseOrders((current) => current.map((order) => ({ ...order, location: order.location === renameTarget ? nextName : order.location })));
     setSalesOrders((current) => current.map((order) => ({ ...order, location: order.location === renameTarget ? nextName : order.location })));
@@ -890,28 +908,25 @@ export default function App() {
     showToast(`${operationForm.type} recorded successfully.`);
   };
 
-  const previewImport = async (fileList) => {
-    const files = Array.from(fileList || []);
-    if (!files.length) return;
-
+  const processImportSources = (sources, columnMapping = {}) => {
     const validRows = [];
     let skipped = 0;
     const parseIssues = [];
     const rowIssues = [];
     const seenSkus = new Set(products.map((product) => String(product.sku || '').trim().toUpperCase()));
 
-    for (const file of files) {
-      const extension = file.name.split('.').pop()?.toLowerCase();
+    for (const source of sources) {
+      const extension = source.extension;
       if (!['csv', 'tsv', 'txt', 'json'].includes(extension)) {
-        parseIssues.push(`${file.name} (unsupported format)`);
+        parseIssues.push(`${source.name} (unsupported format)`);
         continue;
       }
 
       try {
-        const text = await file.text();
-        const result = parseProductImportText(text, extension, settings.defaultUnit);
+        if (source.error) throw source.error;
+        const result = parseProductImportText(source.text, extension, settings.defaultUnit, columnMapping);
         skipped += result.skipped;
-        rowIssues.push(...result.errors.map((issue) => ({ file: file.name, ...issue })));
+        rowIssues.push(...result.errors.map((issue) => ({ file: source.name, ...issue })));
         result.products.forEach((product) => {
           if (seenSkus.has(product.sku)) {
             skipped += 1;
@@ -923,10 +938,10 @@ export default function App() {
             return;
           }
           seenSkus.add(product.sku);
-          validRows.push({ ...product, sourceFile: file.name });
+          validRows.push({ ...product, sourceFile: source.name });
         });
       } catch (error) {
-        parseIssues.push(`${file.name} (${error.message || 'unable to parse'})`);
+        parseIssues.push(`${source.name} (${error.message || 'unable to parse'})`);
       }
     }
 
@@ -940,6 +955,52 @@ export default function App() {
         ? `${validRows.length} valid product rows ready to import${skipped ? `; ${skipped} rows skipped` : ''}.`
         : `No valid rows were detected. ${parseIssues.join(', ') || 'Review the file format and try again.'}`
     );
+  };
+
+  const previewImport = async (fileList) => {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    const sources = await Promise.all(files.map(async (file) => {
+      const source = { name: file.name, extension: file.name.split('.').pop()?.toLowerCase() };
+      try {
+        return { ...source, text: await file.text() };
+      } catch (error) {
+        return { ...source, error };
+      }
+    }));
+    setImportSources(sources);
+    setImportColumnMapping({});
+
+    let headers = [];
+    for (const source of sources) {
+      if (!['csv', 'tsv', 'txt', 'json'].includes(source.extension) || source.error) continue;
+      try {
+        headers = parseProductImportText(source.text, source.extension, settings.defaultUnit).headers;
+        if (headers.length) break;
+      } catch {
+        continue;
+      }
+    }
+    setImportHeaders(headers);
+    processImportSources(sources);
+  };
+
+  const updateImportMapping = (field, sourceHeader) => {
+    const nextMapping = { ...importColumnMapping };
+    if (sourceHeader) nextMapping[field] = sourceHeader;
+    else delete nextMapping[field];
+    setImportColumnMapping(nextMapping);
+    processImportSources(importSources, nextMapping);
+  };
+
+  const openImportModal = () => {
+    setImportPreview([]);
+    setImportMessage('');
+    setImportErrors([]);
+    setImportSources([]);
+    setImportHeaders([]);
+    setImportColumnMapping({});
+    setModal('import');
   };
 
   const commitImport = () => {
@@ -960,6 +1021,8 @@ export default function App() {
         id: Date.now() + index,
         name: item.name,
         sku: item.sku,
+        barcode: item.barcode || '',
+        description: item.description || '',
         category: item.category,
         supplierId: suppliers.find((supplier) => supplier.name.trim().toLowerCase() === String(item.supplierName || '').trim().toLowerCase())?.id || '',
         supplierName: item.supplierName || '',
@@ -987,7 +1050,7 @@ export default function App() {
   const filteredProducts = React.useMemo(() => {
     return [...products]
       .filter((product) => {
-        const haystack = `${product.name} ${product.sku} ${product.category} ${product.material || ''}`.toLowerCase();
+        const haystack = `${product.name} ${product.sku} ${product.barcode || ''} ${product.description || ''} ${product.category} ${product.material || ''}`.toLowerCase();
         const matchesSearch = haystack.includes(search.toLowerCase());
         const matchesCategory = categoryFilter === 'All' || product.category === categoryFilter;
         const matchesLocation = locationFilter === 'All' || Number(product.stock?.[locationFilter] || 0) > 0;
@@ -1601,7 +1664,7 @@ export default function App() {
     { label: 'New receipt', action: () => openOperation('Receipt'), icon: '↓' },
     { label: 'New transfer', action: () => openOperation('Internal'), icon: '⇄' },
     { label: 'Add warehouse', action: () => { setWarehouseForm({ name: '' }); setModal('warehouse'); }, icon: '⌂' },
-    { label: 'Import inventory', action: () => { setImportPreview([]); setImportMessage(''); setImportErrors([]); setModal('import'); }, icon: '↥' },
+    { label: 'Import inventory', action: openImportModal, icon: '↥' },
     { label: 'Open billing', page: 'Billing', icon: '$' },
     { label: 'Open reports', page: 'Reports', icon: '▥' },
     { label: 'Workspace settings', page: 'Settings', icon: '⚙' },
@@ -3326,7 +3389,7 @@ export default function App() {
                       <div className="page-sub">Track product records, pricing, stock health, and reorder readiness.</div>
                     </div>
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                      <Button variant="outline-secondary" onClick={() => { setImportPreview([]); setImportMessage(''); setImportErrors([]); setModal('import'); }}>Import file</Button>
+                      <Button variant="outline-secondary" onClick={openImportModal}>Import file</Button>
                       <Button variant="success" onClick={openProductModal}>＋ Add product</Button>
                     </div>
                   </div>
@@ -3362,7 +3425,12 @@ export default function App() {
                     {selectedProductIds.length > 0 && (
                       <div className="section-head" style={{ paddingTop: 10, paddingBottom: 10 }}>
                         <span className="soft-count" aria-live="polite">{selectedProductIds.length} product{selectedProductIds.length === 1 ? '' : 's'} selected</span>
-                        <div style={{ display: 'flex', gap: 8 }}>
+                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                          <Form.Select aria-label="Bulk update category" size="sm" value={bulkCategory} onChange={(event) => setBulkCategory(event.target.value)} style={{ width: 'auto', minWidth: 160 }}>
+                            <option value="">Change category...</option>
+                            {[...new Set(products.map((product) => product.category).filter(Boolean))].map((category) => <option key={category} value={category}>{category}</option>)}
+                          </Form.Select>
+                          <Button size="sm" variant="outline-secondary" disabled={!bulkCategory} onClick={updateSelectedCategory}>Apply category</Button>
                           <Button size="sm" variant="outline-secondary" onClick={exportSelectedProducts}>Export selected</Button>
                           <Button size="sm" variant="outline-secondary" onClick={() => setSelectedProductIds([])}>Clear selection</Button>
                         </div>
@@ -3400,7 +3468,7 @@ export default function App() {
                                   <td><input type="checkbox" aria-label={`Select ${product.name}`} checked={selectedProductIds.includes(String(product.id))} onChange={() => toggleProductSelection(product.id)} /></td>
                                   <td>
                                     <div className="product-name">{product.name}</div>
-                                    <div style={{ color: '#8b9aad', fontSize: 10 }}>{product.sku} · {product.unit}</div>
+                                    <div style={{ color: '#8b9aad', fontSize: 10 }}>{product.sku} · {product.unit}{product.barcode ? ` · ${product.barcode}` : ''}</div>
                                   </td>
                                   <td>{product.category}</td>
                                   <td>{new Intl.NumberFormat(undefined, { style: 'currency', currency: settings.currency }).format(product.price)}</td>
@@ -4889,6 +4957,7 @@ export default function App() {
                 <>
                   <Row className="g-3 mb-3">
                     <Col xs={6}><div className="kpi-label">SKU</div><strong>{productDetails.sku}</strong></Col>
+                    <Col xs={6}><div className="kpi-label">Barcode</div><strong>{productDetails.barcode || 'Not specified'}</strong></Col>
                     <Col xs={6}><div className="kpi-label">Category</div><strong>{productDetails.category}</strong></Col>
                     <Col xs={6}><div className="kpi-label">Preferred supplier</div><strong>{productDetails.supplierName || suppliers.find((supplier) => String(supplier.id) === String(productDetails.supplierId))?.name || 'Not assigned'}</strong></Col>
                     <Col xs={6}><div className="kpi-label">Material</div><strong>{productDetails.material || 'Not specified'}</strong></Col>
@@ -4896,6 +4965,12 @@ export default function App() {
                     <Col xs={6}><div className="kpi-label">Total on hand</div><strong>{formatNumber(totalStock(productDetails))} {productDetails.unit}</strong></Col>
                     <Col xs={6}><div className="kpi-label">Reorder point</div><strong>{formatNumber(productDetails.reorder)} {productDetails.unit}</strong></Col>
                   </Row>
+                  {productDetails.description && (
+                    <div style={{ marginBottom: 16 }}>
+                      <div className="kpi-label">Description</div>
+                      <p style={{ margin: '4px 0 0', color: '#425a74' }}>{productDetails.description}</p>
+                    </div>
+                  )}
                   <div className="section-card" style={{ boxShadow: 'none' }}>
                     <div className="section-head">
                       <h3 className="section-heading">Stock by location</h3>
@@ -4938,6 +5013,14 @@ export default function App() {
                   <Col sm={6}>
                     <Form.Label>SKU</Form.Label>
                     <Form.Control value={productForm.sku} onChange={(event) => setProductForm({ ...productForm, sku: event.target.value })} placeholder="STL-2041" />
+                  </Col>
+                  <Col sm={6}>
+                    <Form.Label>Barcode</Form.Label>
+                    <Form.Control value={productForm.barcode} onChange={(event) => setProductForm({ ...productForm, barcode: event.target.value })} placeholder="EAN or UPC" />
+                  </Col>
+                  <Col xs={12}>
+                    <Form.Label>Description</Form.Label>
+                    <Form.Control as="textarea" rows={2} value={productForm.description} onChange={(event) => setProductForm({ ...productForm, description: event.target.value })} placeholder="Product specifications or handling notes" />
                   </Col>
                   <Col sm={6}>
                     <Form.Label>Category</Form.Label>
@@ -5401,6 +5484,34 @@ export default function App() {
                 Import CSV, TSV, TXT tables, or JSON lists. Use a price or unitprice field for the product’s listed price; purchase costs are not mapped to it. A supplier, vendor, or preferred supplier field is matched to existing suppliers by name. Data is stored locally in this browser and duplicate SKUs are skipped.
               </p>
               <Form.Control type="file" accept=".csv,.tsv,.txt,.json" multiple onChange={(event) => { previewImport(event.target.files); event.target.value = ''; }} />
+              {importHeaders.length > 0 && (
+                <div className="section-card" style={{ marginTop: 14, padding: 12, boxShadow: 'none' }}>
+                  <strong style={{ fontSize: 12 }}>Map source columns</strong>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10, marginTop: 10 }}>
+                    {[
+                      ['name', 'Product name'],
+                      ['sku', 'SKU'],
+                      ['barcode', 'Barcode'],
+                      ['description', 'Description'],
+                      ['quantity', 'Quantity on hand'],
+                      ['price', 'Listed price'],
+                      ['reorder', 'Reorder point'],
+                      ['unit', 'Unit'],
+                      ['category', 'Category'],
+                      ['material', 'Material'],
+                      ['supplierName', 'Supplier'],
+                    ].map(([field, label]) => (
+                      <Form.Group key={field}>
+                        <Form.Label htmlFor={`import-map-${field}`}>{label}</Form.Label>
+                        <Form.Select id={`import-map-${field}`} size="sm" value={importColumnMapping[field] || ''} onChange={(event) => updateImportMapping(field, event.target.value)}>
+                          <option value="">Auto-detect</option>
+                          {importHeaders.map((header, index) => <option key={`${header}-${index}`} value={header}>{header}</option>)}
+                        </Form.Select>
+                      </Form.Group>
+                    ))}
+                  </div>
+                </div>
+              )}
               {importMessage && <div className="inventory-alert" style={{ marginTop: 14 }} role="status">{importMessage}</div>}
               {importErrors.length > 0 && (
                 <div style={{ marginTop: 14 }}>

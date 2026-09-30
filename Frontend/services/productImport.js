@@ -1,5 +1,22 @@
 import { normalizeImportedProduct } from '../domain.js';
 
+const normalizeHeader = (header) => String(header).toLowerCase().replace(/[^a-z0-9]+/g, '');
+
+const applyColumnMapping = (record, columnMapping) => {
+  if (!columnMapping || typeof columnMapping !== 'object') return record;
+  const valuesByHeader = Object.fromEntries(
+    Object.entries(record).map(([header, value]) => [normalizeHeader(header), value])
+  );
+  const mapped = { ...record };
+  Object.entries(columnMapping).forEach(([field, sourceHeader]) => {
+    const sourceKey = normalizeHeader(sourceHeader);
+    if (sourceKey && Object.prototype.hasOwnProperty.call(valuesByHeader, sourceKey)) {
+      mapped[field] = valuesByHeader[sourceKey];
+    }
+  });
+  return mapped;
+};
+
 export const parseDelimited = (text, delimiter = ',') => {
   const rows = [];
   let current = [];
@@ -43,21 +60,24 @@ export const parseDelimited = (text, delimiter = ',') => {
   return rows;
 };
 
-export const parseProductImportText = (text, extension, defaultUnit = 'units') => {
+export const parseProductImportText = (text, extension, defaultUnit = 'units', columnMapping = {}) => {
   let rows;
+  let headers = [];
 
   if (extension === 'json') {
     const parsed = JSON.parse(text);
     rows = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.products) ? parsed.products : [];
+    headers = Object.keys(rows[0] || {});
   } else {
     const delimiter = extension === 'tsv' ? '\t' : ',';
     const parsedRows = parseDelimited(text, delimiter);
     if (parsedRows.length < 2) {
       throw new Error('A header row and at least one product row are required.');
     }
-    const headers = parsedRows[0].map((header) => header.toLowerCase().replace(/[^a-z0-9]+/g, ''));
+    headers = parsedRows[0].map((header) => header.trim());
+    const normalizedHeaders = headers.map(normalizeHeader);
     rows = parsedRows.slice(1).map((row) => Object.fromEntries(
-      headers.map((header, index) => [header, row[index] ?? ''])
+      normalizedHeaders.map((header, index) => [header, row[index] ?? ''])
     ));
   }
 
@@ -65,7 +85,7 @@ export const parseProductImportText = (text, extension, defaultUnit = 'units') =
   const errors = [];
   const seenSkus = new Set();
   rows.forEach((record, index) => {
-    const product = normalizeImportedProduct(record, defaultUnit);
+    const product = normalizeImportedProduct(applyColumnMapping(record, columnMapping), defaultUnit);
     if (!product) {
       const name = String(record?.name || record?.product || record?.productname || '').trim();
       const sku = String(record?.sku || record?.code || record?.itemcode || '').trim();
@@ -90,5 +110,5 @@ export const parseProductImportText = (text, extension, defaultUnit = 'units') =
     });
   });
 
-  return { products, skipped: errors.length, errors };
+  return { products, skipped: errors.length, errors, headers };
 };

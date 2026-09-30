@@ -49,6 +49,23 @@ test('imports preferred supplier names from common column aliases', () => {
   assert.equal(json.products[0].supplierName, 'Northstar Supply');
 });
 
+test('maps custom source columns into product fields', () => {
+  const result = parseProductImportText(
+    'Item Label,Item Number,Available Units,Retail USD,GTIN,Long description\nCopper cable,SKU-8,4,2.75,4006381333931,Shielded copper cable',
+    'csv',
+    'units',
+    { name: 'Item Label', sku: 'Item Number', quantity: 'Available Units', price: 'Retail USD', barcode: 'GTIN', description: 'Long description' },
+  );
+
+  assert.deepEqual(result.headers, ['Item Label', 'Item Number', 'Available Units', 'Retail USD', 'GTIN', 'Long description']);
+  assert.equal(result.products[0].name, 'Copper cable');
+  assert.equal(result.products[0].sku, 'SKU-8');
+  assert.equal(result.products[0].quantity, 4);
+  assert.equal(result.products[0].price, 2.75);
+  assert.equal(result.products[0].barcode, '4006381333931');
+  assert.equal(result.products[0].description, 'Shielded copper cable');
+});
+
 test('accepts JSON arrays and products envelopes and rejects malformed tabular input', () => {
   const arrayResult = parseProductImportText('[{"name":"Nut","sku":"N-1"}]', 'json');
   const envelopeResult = parseProductImportText('{"products":[{"name":"Washer","sku":"W-2"}]}', 'json');

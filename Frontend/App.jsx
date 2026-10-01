@@ -7,6 +7,7 @@ import { deductShipmentStock, getShipmentBlockReason } from './services/orders.j
 import { getInvoiceOutstanding, getPaymentValidationError } from './services/billing.js';
 import { validateLoginCredentials } from './services/auth.js';
 import { parseProductImportText } from './services/productImport.js';
+import { getWarehouseCapacityStatus, normalizeWarehouseProfile, validateWarehouseCapacity } from './services/warehouses.js';
 import OperationsTable from './components/OperationsTable.jsx';
 import StatusBadge from './components/StatusBadge.jsx';
 import './styles/design-tokens.css';
@@ -260,6 +261,10 @@ export default function App() {
     const saved = readSaved('stockwise-locations', warehouseSeed);
     return sanitizeStoredArray(saved, warehouseSeed);
   });
+  const [warehouseProfiles, setWarehouseProfiles] = React.useState(() => {
+    const saved = readSaved('stockwise-warehouse-profiles', {});
+    return Object.fromEntries(warehouseSeed.map((location) => [location, normalizeWarehouseProfile(saved?.[location], location)]));
+  });
   const [suppliers, setSuppliers] = React.useState(() => {
     const saved = readSaved('stockwise-suppliers', initialSuppliers);
     return sanitizeStoredArray(saved, initialSuppliers);
@@ -360,7 +365,7 @@ export default function App() {
     destination: warehouseSeed[0],
   });
   const [invoiceForm, setInvoiceForm] = React.useState({ kind: 'Invoice', party: '', amount: '', dueDate: '' });
-  const [warehouseForm, setWarehouseForm] = React.useState({ name: '' });
+  const [warehouseForm, setWarehouseForm] = React.useState({ name: '', capacity: '', bins: '' });
   const [renameTarget, setRenameTarget] = React.useState('');
   const [renameValue, setRenameValue] = React.useState('');
   const [typeFilter, setTypeFilter] = React.useState('All');
@@ -405,6 +410,7 @@ export default function App() {
     writeSaved('stockwise-operations', docs);
     writeSaved('stockwise-billing', invoices);
     writeSaved('stockwise-locations', warehouseList);
+    writeSaved('stockwise-warehouse-profiles', warehouseProfiles);
     writeSaved('stockwise-suppliers', suppliers);
     writeSaved('stockwise-purchase-orders', purchaseOrders);
     writeSaved('stockwise-customers', customers);
@@ -414,7 +420,7 @@ export default function App() {
     writeSaved('stockwise-payments', payments);
     writeSaved('stockwise-settings', settings);
     writeSaved('stockwise-users', users);
-  }, [themeMode, remember, products, docs, invoices, warehouseList, suppliers, purchaseOrders, customers, salesOrders, shipments, returns, payments, settings, users]);
+  }, [themeMode, remember, products, docs, invoices, warehouseList, warehouseProfiles, suppliers, purchaseOrders, customers, salesOrders, shipments, returns, payments, settings, users]);
 
   const displayUser = authenticated && typeof authenticated === 'object' ? authenticated : demoUser;
   const userRole = displayUser.role || 'Admin';
@@ -761,12 +767,18 @@ export default function App() {
       showToast('This location already exists.');
       return;
     }
+    const profile = normalizeWarehouseProfile({ ...warehouseForm, name }, name);
+    if (warehouseForm.capacity && !profile.capacity) {
+      showToast('Enter a valid positive capacity.');
+      return;
+    }
     setWarehouseList((current) => [...current, name]);
+    setWarehouseProfiles((current) => ({ ...current, [name]: profile }));
     setProducts((current) => current.map((product) => ({
       ...product,
       stock: { ...product.stock, [name]: 0 },
     })));
-    setWarehouseForm({ name: '' });
+    setWarehouseForm({ name: '', capacity: '', bins: '' });
     setModal('');
     showToast('Location added.');
   };
@@ -779,6 +791,11 @@ export default function App() {
       return;
     }
     setWarehouseList((current) => current.map((location) => (location === renameTarget ? nextName : location)));
+    setWarehouseProfiles((current) => {
+      const next = { ...current, [nextName]: normalizeWarehouseProfile(current[renameTarget], nextName) };
+      delete next[renameTarget];
+      return next;
+    });
     setProducts((current) => current.map((product) => {
       const stock = { ...product.stock };
       if (Object.prototype.hasOwnProperty.call(stock, renameTarget)) {
@@ -820,6 +837,11 @@ export default function App() {
       variant: 'danger',
       onConfirm: () => {
         setWarehouseList((current) => current.filter((entry) => entry !== location));
+        setWarehouseProfiles((current) => {
+          const next = { ...current };
+          delete next[location];
+          return next;
+        });
         setProducts((current) => current.map((product) => {
           const stock = { ...product.stock };
           delete stock[location];
@@ -883,6 +905,22 @@ export default function App() {
     });
     if (stockResult.error) {
       showToast(stockResult.error);
+      return;
+    }
+
+    const affectedLocations = operationForm.type === 'Internal'
+      ? [operationForm.destination]
+      : [operationForm.location];
+    const capacityError = affectedLocations
+      .map((location) => validateWarehouseCapacity(
+        Object.values(products).length
+          ? products.reduce((sum, entry) => sum + Number(stockResult.stock?.[location] || entry.stock?.[location] || 0), 0)
+          : 0,
+        warehouseProfiles[location]?.capacity,
+      ))
+      .find(Boolean);
+    if (capacityError) {
+      showToast(capacityError);
       return;
     }
 
@@ -1092,6 +1130,13 @@ export default function App() {
     }, 0);
   const totalTrackedUnits = products.reduce((sum, product) => sum + totalStock(product), 0);
   const activeProductCount = products.filter((product) => totalStock(product) > 0).length;
+  const reservedStock = React.useMemo(() => salesOrders
+    .filter((order) => ['Confirmed', 'Picking', 'Packed'].includes(order.status))
+    .reduce((reserved, order) => {
+      const key = `${order.productId}:${order.location}`;
+      reserved[key] = (reserved[key] || 0) + Number(order.qty || 0);
+      return reserved;
+    }, {}), [salesOrders]);
   const returnableSalesOrders = salesOrders.filter((order) => {
     if (order.status !== 'Shipped') return false;
     const alreadyReturned = returns
@@ -1192,6 +1237,10 @@ export default function App() {
         const netMovement = recentReceipts - recentDeliveries;
         const avgDailyDemand = demand.units === null ? null : demand.units / 30;
         const coverageDays = avgDailyDemand > 0 ? stock / avgDailyDemand : null;
+        const evidence = demand.units === null
+          ? 'Dated demand unavailable'
+          : `${demand.orderCount} fulfilled order${demand.orderCount === 1 ? '' : 's'} in 30d`;
+        const confidence = demand.units === null ? 'None' : demand.orderCount >= 3 ? 'Measured' : 'Limited';
 
         let risk = 'Stable';
         let recommendation = 'Maintain';
@@ -1206,7 +1255,10 @@ export default function App() {
           stock,
           reorder,
           demand: demand.units,
+          demandOrderCount: demand.orderCount,
           hasUndatedDemand: demand.hasUndatedOrders,
+          evidence,
+          confidence,
           netMovement,
           coverageDays,
           risk,
@@ -1610,9 +1662,12 @@ export default function App() {
         const outbound = docs.filter((doc) => doc.location === location && doc.type === 'Delivery').reduce((sum, doc) => sum + Number(doc.qty || 0), 0);
         const netFlow = inbound - outbound;
         const coverage = products.length ? (activeProducts / products.length) * 100 : 0;
+        const capacityStatus = getWarehouseCapacityStatus(totalUnits, warehouseProfiles[location]?.capacity);
         let health = 'Healthy';
         if (lowStockProductsAtLocation > 3 || coverage < 35) health = 'Watch';
         if (lowStockProductsAtLocation > 6 || coverage < 20) health = 'Critical';
+        if (capacityStatus.status === 'Near capacity' && health === 'Healthy') health = 'Watch';
+        if (capacityStatus.status === 'Full') health = 'Critical';
 
         return {
           location,
@@ -1623,6 +1678,7 @@ export default function App() {
           outbound,
           netFlow,
           coverage,
+          capacityStatus,
           health,
         };
       })
@@ -1630,7 +1686,7 @@ export default function App() {
         const healthOrder = { Critical: 0, Watch: 1, Healthy: 2 };
         return healthOrder[a.health] - healthOrder[b.health] || b.totalUnits - a.totalUnits;
       });
-  }, [warehouseList, products, docs, settings]);
+  }, [warehouseList, warehouseProfiles, products, docs, settings]);
   const todayPriorityText = products.length === 0
     ? 'Your workspace is ready. Add your first item to start tracking inventory.'
     : lowStockProducts.length
@@ -1663,7 +1719,7 @@ export default function App() {
     { label: 'Open action center', page: 'Exceptions', icon: '⚑' },
     { label: 'New receipt', action: () => openOperation('Receipt'), icon: '↓' },
     { label: 'New transfer', action: () => openOperation('Internal'), icon: '⇄' },
-    { label: 'Add warehouse', action: () => { setWarehouseForm({ name: '' }); setModal('warehouse'); }, icon: '⌂' },
+    { label: 'Add warehouse', action: () => { setWarehouseForm({ name: '', capacity: '', bins: '' }); setModal('warehouse'); }, icon: '⌂' },
     { label: 'Import inventory', action: openImportModal, icon: '↥' },
     { label: 'Open billing', page: 'Billing', icon: '$' },
     { label: 'Open reports', page: 'Reports', icon: '▥' },
@@ -1927,7 +1983,8 @@ export default function App() {
 
     const location = salesForm.location || warehouseList[0] || 'Main Warehouse';
     const available = Number(product.stock?.[location] || 0);
-    if ((salesForm.status === 'Shipped' || salesForm.status === 'Confirmed') && available < qty) {
+    const alreadyReserved = reservedStock[`${product.id}:${location}`] || 0;
+    if ((salesForm.status === 'Shipped' || salesForm.status === 'Confirmed') && available - alreadyReserved < qty) {
       showToast('Not enough stock available to fulfill this order.');
       return;
     }
@@ -1944,6 +2001,7 @@ export default function App() {
       location,
       expectedDate: salesForm.expectedDate || 'Not scheduled',
       total: qty * unitPrice,
+      reservedQty: ['Confirmed', 'Picking', 'Packed'].includes(salesForm.status) ? qty : 0,
       createdAt: new Date().toISOString(),
     };
 
@@ -4017,13 +4075,15 @@ export default function App() {
                       <h1 className="page-head">Warehouses & locations</h1>
                       <div className="page-sub">Keep inventory organized across every warehouse, zone, and staging area.</div>
                     </div>
-                    <Button variant="success" onClick={() => { setWarehouseForm({ name: '' }); setModal('warehouse'); }}>＋ Add location</Button>
+                    <Button variant="success" onClick={() => { setWarehouseForm({ name: '', capacity: '', bins: '' }); setModal('warehouse'); }}>＋ Add location</Button>
                   </div>
 
                   <div className="warehouse-grid">
                     {warehouseList.map((location) => {
                       const totalUnits = products.reduce((sum, product) => sum + Number(product.stock?.[location] || 0), 0);
                       const activeProducts = products.filter((product) => Number(product.stock?.[location] || 0) > 0).length;
+                      const profile = normalizeWarehouseProfile(warehouseProfiles[location], location);
+                      const capacityStatus = getWarehouseCapacityStatus(totalUnits, profile.capacity);
                       return (
                         <div key={location} className="warehouse-tile warehouse-card">
                           <div className="feature-head">
@@ -4036,6 +4096,10 @@ export default function App() {
                           <div className="value">{formatNumber(totalUnits)}</div>
                           <div className="small">Total units in storage</div>
                           <div className="small" style={{ marginTop: 8 }}>{activeProducts} active product lines</div>
+                          <div className="small" style={{ marginTop: 8 }}>
+                            {capacityStatus.capacity === null ? 'Capacity not configured' : `${formatNumber(capacityStatus.used)} / ${formatNumber(capacityStatus.capacity)} units · ${Math.round(capacityStatus.percent)}%`}
+                          </div>
+                          <div className="small" style={{ marginTop: 4 }}>{profile.bins.length ? `${profile.bins.length} bins configured` : 'No bins configured'} · {capacityStatus.status}</div>
                         </div>
                       );
                     })}
@@ -4059,12 +4123,13 @@ export default function App() {
                             <th>Inbound</th>
                             <th>Outbound</th>
                             <th>Net flow</th>
+                            <th>Capacity</th>
                             <th>Health</th>
                           </tr>
                         </thead>
                         <tbody>
                           {warehousePerformance.length === 0 ? (
-                            <tr><td colSpan="8"><div className="empty-state">No warehouse performance data is available yet.</div></td></tr>
+                            <tr><td colSpan="9"><div className="empty-state">No warehouse performance data is available yet.</div></td></tr>
                           ) : (
                             warehousePerformance.map((location) => (
                               <tr key={location.location}>
@@ -4075,6 +4140,7 @@ export default function App() {
                                 <td>{formatNumber(location.inbound)}</td>
                                 <td>{formatNumber(location.outbound)}</td>
                                 <td>{formatNumber(location.netFlow)}</td>
+                                <td>{(() => { const profile = normalizeWarehouseProfile(warehouseProfiles[location.location], location.location); const status = getWarehouseCapacityStatus(location.totalUnits, profile.capacity); return status.capacity === null ? 'Unmetered' : `${Math.round(status.percent)}%`; })()}</td>
                                 <td><StatusBadge status={location.health} /></td>
                               </tr>
                             ))
@@ -4297,12 +4363,13 @@ export default function App() {
                             <th>Demand / 30d</th>
                             <th>Coverage</th>
                             <th>Risk</th>
+                            <th>Evidence</th>
                             <th>Recommendation</th>
                           </tr>
                         </thead>
                         <tbody>
                           {forecastSignals.length === 0 ? (
-                            <tr><td colSpan="7"><div className="empty-state">No product forecast is available yet.</div></td></tr>
+                            <tr><td colSpan="8"><div className="empty-state">No product forecast is available yet.</div></td></tr>
                           ) : (
                             forecastSignals.map((item) => (
                               <tr key={item.id}>
@@ -4312,6 +4379,7 @@ export default function App() {
                                 <td>{item.demand === null ? 'Unavailable · undated orders' : formatNumber(item.demand)}</td>
                                 <td>{Number.isFinite(item.coverageDays) ? `${Math.round(item.coverageDays)}d` : '—'}</td>
                                 <td><StatusBadge status={item.risk} /></td>
+                                <td title={item.evidence}>{item.evidence} · {item.confidence}</td>
                                 <td>{item.recommendation}</td>
                               </tr>
                             ))
@@ -5447,10 +5515,20 @@ export default function App() {
                 <Modal.Title>Add location</Modal.Title>
               </Modal.Header>
               <Modal.Body>
-                <Form.Group>
+                <Row className="g-3">
+                  <Col xs={12}>
                   <Form.Label>Warehouse or location name</Form.Label>
-                  <Form.Control value={warehouseForm.name} onChange={(event) => setWarehouseForm({ name: event.target.value })} placeholder="e.g. East Distribution Hub" />
-                </Form.Group>
+                  <Form.Control value={warehouseForm.name} onChange={(event) => setWarehouseForm({ ...warehouseForm, name: event.target.value })} placeholder="e.g. East Distribution Hub" />
+                  </Col>
+                  <Col sm={6}>
+                    <Form.Label>Capacity (units)</Form.Label>
+                    <Form.Control type="number" min="1" step="1" value={warehouseForm.capacity} onChange={(event) => setWarehouseForm({ ...warehouseForm, capacity: event.target.value })} placeholder="Optional" />
+                  </Col>
+                  <Col sm={6}>
+                    <Form.Label>Bins</Form.Label>
+                    <Form.Control value={warehouseForm.bins} onChange={(event) => setWarehouseForm({ ...warehouseForm, bins: event.target.value })} placeholder="A-01, A-02" />
+                  </Col>
+                </Row>
               </Modal.Body>
               <Modal.Footer>
                 <Button variant="light" onClick={() => setModal('')}>Cancel</Button>

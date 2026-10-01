@@ -1,0 +1,43 @@
+{
+  "name": "stockwise-platform",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev:server": "tsx watch server/src/main.ts",
+    "build:server": "tsc -p server/tsconfig.json",
+    "start:server": "node server/dist/main.js",
+    "test:server": "node --test --import tsx server/src/app.test.ts server/src/auth/*.test.ts",
+    "db:generate": "prisma generate --schema server/prisma/schema.prisma",
+    "db:migrate": "prisma migrate dev --schema server/prisma/schema.prisma",
+    "db:studio": "prisma studio --schema server/prisma/schema.prisma"
+  },
+  "dependencies": {
+    "@prisma/client": "6.12.0",
+    "argon2": "^0.44.0",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.2",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.1.0",
+    "helmet": "^8.1.0",
+    "pino-http": "^10.5.0",
+    "zod": "^4.1.11"
+  },
+  "devDependencies": {
+    "@types/cookie-parser": "^1.4.9",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.5.2",
+    "prisma": "6.12.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.9.2"
+  },
+  "allowScripts": {
+    "argon2@0.44.0": true,
+    "esbuild@0.28.2": true,
+    "prisma@6.12.0": true,
+    "@prisma/client@6.12.0": true,
+    "@prisma/engines@6.12.0": true
+  }
+}

@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build:server
+      - run: npm run test:server
+      - run: npm --prefix Frontend ci
+      - run: npm --prefix Frontend test
+      - run: npm --prefix Frontend run build
+      - run: npm audit --audit-level=high

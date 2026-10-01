@@ -1,0 +1,138 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum MembershipRole {
+  OWNER
+  ADMIN
+  INVENTORY_MANAGER
+  WAREHOUSE_MANAGER
+  PROCUREMENT
+  FINANCE
+  SALES
+  EMPLOYEE
+  AUDITOR
+  VIEWER
+}
+
+enum ProductStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+model Organization {
+  id          String       @id @default(uuid()) @db.Uuid
+  name        String
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  memberships Membership[]
+  products    Product[]
+  warehouses  Warehouse[]
+  sessions    Session[]
+  auditLogs   AuditLog[]
+
+  @@index([createdAt])
+}
+
+model User {
+  id           String       @id @default(uuid()) @db.Uuid
+  email        String       @unique
+  name         String
+  passwordHash String
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  memberships  Membership[]
+  sessions     Session[]
+  auditLogs    AuditLog[]
+}
+
+model Membership {
+  id             String         @id @default(uuid()) @db.Uuid
+  organizationId String         @db.Uuid
+  userId         String         @db.Uuid
+  role           MembershipRole
+  createdAt      DateTime       @default(now())
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+}
+
+model Session {
+  id             String       @id @default(uuid()) @db.Uuid
+  tokenHash      String       @unique
+  userId         String       @db.Uuid
+  organizationId String       @db.Uuid
+  expiresAt      DateTime
+  revokedAt      DateTime?
+  createdAt      DateTime     @default(now())
+  lastUsedAt     DateTime?
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+  @@index([organizationId, revokedAt])
+  @@index([expiresAt])
+}
+
+model Product {
+  id             String         @id @default(uuid()) @db.Uuid
+  organizationId String         @db.Uuid
+  sku            String
+  barcode        String?
+  name           String
+  description    String?
+  category       String?
+  unit           String         @default("units")
+  cost           Decimal?       @db.Decimal(14, 4)
+  sellingPrice   Decimal?       @db.Decimal(14, 4)
+  reorderPoint   Decimal        @default(0) @db.Decimal(14, 4)
+  reorderQuantity Decimal?      @db.Decimal(14, 4)
+  status         ProductStatus  @default(ACTIVE)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, sku])
+  @@index([organizationId, status])
+  @@index([organizationId, name])
+}
+
+model Warehouse {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @db.Uuid
+  name           String
+  capacity       Decimal?     @db.Decimal(14, 4)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+}
+
+model AuditLog {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @db.Uuid
+  actorUserId    String?      @db.Uuid
+  action         String
+  resourceType   String
+  resourceId     String?
+  beforeJson     Json?
+  afterJson      Json?
+  requestId      String
+  ipAddress      String?
+  userAgent      String?
+  createdAt      DateTime     @default(now())
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  actor          User?        @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@index([organizationId, resourceType, resourceId])
+}

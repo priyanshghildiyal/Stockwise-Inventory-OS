@@ -35,6 +35,9 @@ model Organization {
   warehouses  Warehouse[]
   sessions    Session[]
   auditLogs   AuditLog[]
+  Supplier    Supplier[]
+  Customer    Customer[]
+  Order       Order[]
 
   @@index([createdAt])
 }
@@ -82,22 +85,24 @@ model Session {
 }
 
 model Product {
-  id             String         @id @default(uuid()) @db.Uuid
-  organizationId String         @db.Uuid
-  sku            String
-  barcode        String?
-  name           String
-  description    String?
-  category       String?
-  unit           String         @default("units")
-  cost           Decimal?       @db.Decimal(14, 4)
-  sellingPrice   Decimal?       @db.Decimal(14, 4)
-  reorderPoint   Decimal        @default(0) @db.Decimal(14, 4)
-  reorderQuantity Decimal?      @db.Decimal(14, 4)
-  status         ProductStatus  @default(ACTIVE)
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
-  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  id                   String                 @id @default(uuid()) @db.Uuid
+  organizationId       String                 @db.Uuid
+  sku                  String
+  barcode              String?
+  name                 String
+  description          String?
+  category             String?
+  unit                 String                 @default("units")
+  cost                 Decimal?               @db.Decimal(14, 4)
+  sellingPrice         Decimal?               @db.Decimal(14, 4)
+  reorderPoint         Decimal                @default(0) @db.Decimal(14, 4)
+  reorderQuantity      Decimal?               @db.Decimal(14, 4)
+  status               ProductStatus          @default(ACTIVE)
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+  organization         Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  InventoryMovement    InventoryMovement[]
+  InventoryReservation InventoryReservation[]
 
   @@unique([organizationId, sku])
   @@index([organizationId, status])
@@ -105,16 +110,93 @@ model Product {
 }
 
 model Warehouse {
+  id                    String                 @id @default(uuid()) @db.Uuid
+  organizationId        String                 @db.Uuid
+  name                  String
+  capacity              Decimal?               @db.Decimal(14, 4)
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  organization          Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  inventoryMovements    InventoryMovement[]
+  inventoryReservations InventoryReservation[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+}
+
+model Supplier {
   id             String       @id @default(uuid()) @db.Uuid
   organizationId String       @db.Uuid
   name           String
-  capacity       Decimal?     @db.Decimal(14, 4)
+  email          String?
+  phone          String?
   createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@unique([organizationId, name])
   @@index([organizationId])
+}
+
+model Customer {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @db.Uuid
+  name           String
+  email          String?
+  phone          String?
+  createdAt      DateTime     @default(now())
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+}
+
+model InventoryMovement {
+  id              String    @id @default(uuid()) @db.Uuid
+  organizationId  String    @db.Uuid
+  productId       String    @db.Uuid
+  warehouseId     String    @db.Uuid
+  quantity        Decimal   @db.Decimal(14, 4)
+  delta           Decimal   @db.Decimal(14, 4)
+  type            String
+  reason          String
+  createdByUserId String    @db.Uuid
+  createdAt       DateTime  @default(now())
+  product         Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  warehouse       Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, productId, createdAt])
+  @@index([organizationId, warehouseId, createdAt])
+}
+
+model InventoryReservation {
+  id              String    @id @default(uuid()) @db.Uuid
+  organizationId  String    @db.Uuid
+  productId       String    @db.Uuid
+  warehouseId     String    @db.Uuid
+  quantity        Decimal   @db.Decimal(14, 4)
+  status          String    @default("ACTIVE")
+  reason          String
+  createdByUserId String    @db.Uuid
+  createdAt       DateTime  @default(now())
+  product         Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  warehouse       Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, productId, status])
+}
+
+model Order {
+  id                 String       @id @default(uuid()) @db.Uuid
+  organizationId     String       @db.Uuid
+  type               String
+  reference          String
+  customerOrSupplier String
+  status             String       @default("DRAFT")
+  total              Decimal      @db.Decimal(14, 4)
+  createdAt          DateTime     @default(now())
+  organization       Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, reference])
+  @@index([organizationId, status])
 }
 
 model AuditLog {

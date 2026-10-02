@@ -1,8 +1,8 @@
 import { createApp } from './app.js';
 import { config } from './config.js';
 
-if (config.isProduction && !config.DATABASE_URL) {
-  throw new Error('DATABASE_URL must be configured before starting production.');
+if (config.isProduction && !config.useDatabase) {
+  throw new Error('Production requires USE_DATABASE=true with a valid DATABASE_URL.');
 }
 
 const app = createApp();

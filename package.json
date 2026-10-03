@@ -9,7 +9,7 @@
     "build:server": "tsc -p server/tsconfig.json",
     "start:server": "node server/dist/main.js",
     "test": "npm run test:server && cd Frontend && npm test",
-    "test:server": "node --test --import tsx server/src/app.test.ts server/src/auth/*.test.ts server/src/inventory/inventory.test.ts",
+    "test:server": "node --test --import tsx server/src/app.test.ts server/src/auth/*.test.ts server/src/business/*.test.ts server/src/inventory/inventory.test.ts",
     "db:generate": "prisma generate --schema server/prisma/schema.prisma",
     "db:migrate": "prisma migrate dev --schema server/prisma/schema.prisma",
     "db:migrate:deploy": "prisma migrate deploy --schema server/prisma/schema.prisma",
